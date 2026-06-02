@@ -37,7 +37,17 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     );
 
     let processed = 0;
+    let skippedSidechain = 0;
     for (const filePath of files) {
+      // Structural double-guard: anything under a `subagents/` directory is a
+      // subagent transcript. Skipping by path is robust even if the JSONL schema
+      // changes (e.g. isSidechain renamed/dropped). The isSidechain check inside
+      // processSessionFile is the semantic primary defense.
+      if (this.isSubagentFile(filePath)) {
+        skippedSidechain += 1;
+        continue;
+      }
+
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
@@ -56,6 +66,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       processed += 1;
     }
 
+    if (skippedSidechain > 0) {
+      console.debug(`[ClaudeSessionSynchronizer] Skipped ${skippedSidechain} subagent (sidechain) session file(s)`);
+    }
+
     return processed;
   }
 
@@ -64,6 +78,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    */
   async synchronizeFile(filePath: string): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
+      return null;
+    }
+
+    // Structural double-guard (see synchronize()): never index subagent files
+    // that arrive via the watcher.
+    if (this.isSubagentFile(filePath)) {
       return null;
     }
 
@@ -86,6 +106,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   }
 
   /**
+   * Returns true when the file lives under a `subagents/` directory, i.e. it is
+   * a subagent (sidechain) transcript that must not be indexed as a session.
+   */
+  private isSubagentFile(filePath: string): boolean {
+    return filePath.includes(`${path.sep}subagents${path.sep}`);
+  }
+
+  /**
    * Extracts session metadata from one Claude JSONL session file.
    */
   private async processSessionFile(
@@ -94,6 +122,18 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   ): Promise<ParsedSession | null> {
     const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
       const data = rawData as Record<string, unknown>;
+
+      // Skip subagent (sidechain) transcripts. Their rows carry isSidechain:true
+      // and reuse the parent session's sessionId, so indexing them would either
+      // surface internal agent runs as standalone sessions or overwrite the main
+      // session's file path via the createSession upsert. Returning null lets the
+      // line scanner continue; for subagent files every row is sidechain, so the
+      // file resolves to null and is skipped entirely. Main session files start
+      // with isSidechain:false, so their first valid row is accepted normally.
+      if (data.isSidechain === true) {
+        return null;
+      }
+
       const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
       const projectPath = typeof data.cwd === 'string' ? data.cwd : undefined;
 
