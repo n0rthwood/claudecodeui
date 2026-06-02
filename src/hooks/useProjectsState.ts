@@ -14,6 +14,7 @@ import type {
 
 type UseProjectsStateArgs = {
   sessionId?: string;
+  projectId?: string;
   navigate: NavigateFunction;
   latestMessage: AppSocketMessage | null;
   isMobile: boolean;
@@ -25,6 +26,28 @@ type FetchProjectsOptions = {
 };
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
+
+// Reads the user's last-selected provider from localStorage, normalizing to a
+// known `LLMProvider` (defaults to 'claude'). Used when seeding a placeholder
+// session for a URL whose session payload hasn't loaded yet.
+const readSelectedProvider = (): LLMProvider => {
+  let providerFromStorage: string | null = null;
+  try {
+    providerFromStorage = localStorage.getItem('selected-provider');
+  } catch {
+    providerFromStorage = null;
+  }
+
+  switch (providerFromStorage) {
+    case 'cursor':
+    case 'codex':
+    case 'gemini':
+    case 'opencode':
+      return providerFromStorage;
+    default:
+      return 'claude';
+  }
+};
 
 const projectsHaveChanges = (
   prevProjects: Project[],
@@ -104,6 +127,31 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
 };
 
 const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
+
+// Finds a session within a single project across every provider list and
+// returns it tagged with its `__provider`. Returns null when the project does
+// not (yet) contain the session.
+const findSessionInProject = (
+  project: Project,
+  targetSessionId: string,
+): (ProjectSession & { __provider: LLMProvider }) | null => {
+  const providerLists: Array<{ provider: LLMProvider; sessions?: ProjectSession[] }> = [
+    { provider: 'claude', sessions: project.sessions },
+    { provider: 'cursor', sessions: project.cursorSessions },
+    { provider: 'codex', sessions: project.codexSessions },
+    { provider: 'gemini', sessions: project.geminiSessions },
+    { provider: 'opencode', sessions: project.opencodeSessions },
+  ];
+
+  for (const { provider, sessions } of providerLists) {
+    const match = sessions?.find((session) => session.id === targetSessionId);
+    if (match) {
+      return { ...match, __provider: provider };
+    }
+  }
+
+  return null;
+};
 
 const mergeSessionProviderLists = (baseSessions: ProjectSession[], additionalSessions: ProjectSession[]): ProjectSession[] => {
   const merged = [...baseSessions];
@@ -241,6 +289,7 @@ const readPersistedTab = (): AppTab => {
 
 export function useProjectsState({
   sessionId,
+  projectId,
   navigate,
   latestMessage,
   isMobile,
@@ -493,93 +542,91 @@ export function useProjectsState({
     };
   }, []);
 
+  // Restores selected project/session from the URL. The route may carry a
+  // `projectId` (new deeplink routes `/project/:projectId[/session/:sessionId]`)
+  // or only a `sessionId` (legacy `/session/:sessionId`).
   useEffect(() => {
-    if (!sessionId || projects.length === 0) {
+    if (projects.length === 0) {
       return;
     }
 
-    // Project membership is resolved through `projectId` after the migration.
+    // New deeplink path: the project is explicit, so select it directly and look
+    // for the session *inside that project*. This removes the cross-project
+    // collision where the same session id existed under multiple projects.
+    if (projectId) {
+      const targetProject = projects.find((project) => project.projectId === projectId);
+      if (!targetProject) {
+        // Project not in the payload yet (e.g. mid-refresh). Wait for the next
+        // projects update rather than clobbering an existing selection.
+        return;
+      }
+
+      if (selectedProject?.projectId !== targetProject.projectId) {
+        setSelectedProject(targetProject);
+      }
+
+      if (!sessionId) {
+        // `/project/:projectId` with no session => project selected, no session.
+        if (selectedSession?.id) {
+          setSelectedSession(null);
+        }
+        return;
+      }
+
+      const sessionInProject = findSessionInProject(targetProject, sessionId);
+      if (sessionInProject) {
+        const shouldUpdateSession =
+          selectedSession?.id !== sessionId ||
+          selectedSession.__provider !== sessionInProject.__provider;
+        if (shouldUpdateSession) {
+          setSelectedSession(sessionInProject);
+        }
+        return;
+      }
+
+      // Session id is in the URL but not yet present on the project payload
+      // (common right after `session_created` + navigate, before the next
+      // projects refresh). Seed a placeholder so chat state keeps reading the
+      // session store under this id.
+      if (selectedSession?.id === sessionId) {
+        return;
+      }
+
+      setSelectedSession({
+        id: sessionId,
+        __provider: readSelectedProvider(),
+        __projectId: targetProject.projectId,
+        summary: '',
+      });
+      return;
+    }
+
+    // Legacy path: only a session id is known. Fall back to scanning every
+    // project for the first match (back-compat for old `/session/:sessionId`
+    // links and notification deeplinks).
+    if (!sessionId) {
+      return;
+    }
+
     for (const project of projects) {
-      const claudeSession = project.sessions?.find((session) => session.id === sessionId);
-      if (claudeSession) {
+      const sessionInProject = findSessionInProject(project, sessionId);
+      if (sessionInProject) {
         const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'claude';
+          selectedSession?.id !== sessionId ||
+          selectedSession.__provider !== sessionInProject.__provider;
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...claudeSession, __provider: 'claude' });
-        }
-        return;
-      }
-
-      const cursorSession = project.cursorSessions?.find((session) => session.id === sessionId);
-      if (cursorSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'cursor';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...cursorSession, __provider: 'cursor' });
-        }
-        return;
-      }
-
-      const codexSession = project.codexSessions?.find((session) => session.id === sessionId);
-      if (codexSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'codex';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...codexSession, __provider: 'codex' });
-        }
-        return;
-      }
-
-      const geminiSession = project.geminiSessions?.find((session) => session.id === sessionId);
-      if (geminiSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'gemini';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...geminiSession, __provider: 'gemini' });
-        }
-        return;
-      }
-
-      const opencodeSession = project.opencodeSessions?.find((session) => session.id === sessionId);
-      if (opencodeSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'opencode';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...opencodeSession, __provider: 'opencode' });
+          setSelectedSession(sessionInProject);
         }
         return;
       }
     }
 
-    // Session id is in the URL but not yet present on any project payload (common
-    // right after `session_created` + navigate, before the next projects refresh).
-    // Without a `selectedSession`, chat state clears `currentSessionId` and the
-    // UI stops reading the session store even though messages stream under this id.
+    // Session id is in the URL but not yet present on any project payload.
     if (selectedSession?.id === sessionId) {
       return;
     }
@@ -588,37 +635,19 @@ export function useProjectsState({
       return;
     }
 
-    let providerFromStorage: string | null = null;
-    try {
-      providerFromStorage = localStorage.getItem('selected-provider');
-    } catch {
-      providerFromStorage = null;
-    }
-
-    const normalizedProvider: LLMProvider =
-      providerFromStorage === 'cursor'
-        ? 'cursor'
-        : providerFromStorage === 'codex'
-          ? 'codex'
-          : providerFromStorage === 'gemini'
-            ? 'gemini'
-            : providerFromStorage === 'opencode'
-              ? 'opencode'
-            : 'claude';
-
     setSelectedSession({
       id: sessionId,
-      __provider: normalizedProvider,
+      __provider: readSelectedProvider(),
       __projectId: selectedProject.projectId,
       summary: '',
     });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [sessionId, projectId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
       setSelectedProject(project);
       setSelectedSession(null);
-      navigate('/');
+      navigate(`/project/${project.projectId}`);
 
       if (isMobile) {
         setSidebarOpen(false);
@@ -653,7 +682,12 @@ export function useProjectsState({
         }
       }
 
-      navigate(`/session/${session.id}`);
+      const owningProjectId = session.__projectId || selectedProject?.projectId;
+      navigate(
+        owningProjectId
+          ? `/project/${owningProjectId}/session/${session.id}`
+          : `/session/${session.id}`,
+      );
     },
     [activeTab, isMobile, navigate, selectedProject?.projectId],
   );
@@ -664,7 +698,7 @@ export function useProjectsState({
       setSelectedSession(null);
       setActiveTab('chat');
       setNewSessionTrigger((previous) => previous + 1);
-      navigate('/');
+      navigate(`/project/${project.projectId}`);
 
       if (isMobile) {
         setSidebarOpen(false);
@@ -677,7 +711,10 @@ export function useProjectsState({
     (sessionIdToDelete: string) => {
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
-        navigate('/');
+        // Return to the owning project's page when known so the user stays in
+        // context; otherwise fall back to the home route.
+        const owningProjectId = selectedSession.__projectId || selectedProject?.projectId;
+        navigate(owningProjectId ? `/project/${owningProjectId}` : '/');
       }
 
       setProjects((prevProjects) =>
@@ -720,7 +757,7 @@ export function useProjectsState({
         }),
       );
     },
-    [navigate, selectedSession?.id],
+    [navigate, selectedSession?.id, selectedSession?.__projectId, selectedProject?.projectId],
   );
 
   const handleSidebarRefresh = useCallback(async () => {

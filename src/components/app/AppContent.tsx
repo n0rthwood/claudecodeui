@@ -21,7 +21,7 @@ export default function AppContent() {
 
 function AppContentInner() {
   const navigate = useNavigate();
-  const { sessionId } = useParams<{ sessionId?: string }>();
+  const { sessionId, projectId } = useParams<{ sessionId?: string; projectId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
@@ -54,6 +54,7 @@ function AppContentInner() {
     handleNewSession,
   } = useProjectsState({
     sessionId,
+    projectId,
     navigate,
     latestMessage,
     isMobile,
@@ -191,7 +192,12 @@ function AppContentInner() {
           onSessionNotProcessing={markSessionAsNotProcessing}
           processingSessions={processingSessions}
           onNavigateToSession={(targetSessionId: string, options) =>
-            navigate(`/session/${targetSessionId}`, { replace: Boolean(options?.replace) })
+            navigate(
+              selectedProject?.projectId
+                ? `/project/${selectedProject.projectId}/session/${targetSessionId}`
+                : `/session/${targetSessionId}`,
+              { replace: Boolean(options?.replace) },
+            )
           }
           onShowSettings={() => setShowSettings(true)}
           externalMessageUpdate={externalMessageUpdate}

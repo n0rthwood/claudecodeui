@@ -280,7 +280,7 @@ export default function CommandPalette({
                   <CommandItem
                     key={s.id}
                     value={`${s.label} ${s.snippet ?? ''} ${s.id}`.trim()}
-                    onSelect={() => run(() => navigate(`/session/${s.id}`))}
+                    onSelect={() => run(() => navigate(`/project/${projectId}/session/${s.id}`))}
                   >
                     <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                     <div className="flex min-w-0 flex-1 flex-col">
