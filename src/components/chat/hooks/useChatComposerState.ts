@@ -14,7 +14,18 @@ import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
 import { thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  safeLocalStorage,
+  draftKey,
+  historyKey,
+  getDraft,
+  setDraft,
+  removeDraft,
+  getHistory,
+  pushHistory,
+  migrateNewSessionKeys,
+  migrateLegacyProjectDraft,
+} from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -194,9 +205,14 @@ export function useChatComposerState({
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
-      // Draft inputs are keyed by the DB projectId so per-project drafts
-      // survive display-name changes.
-      return safeLocalStorage.getItem(`draft_input_${selectedProject.projectId}`) || '';
+      const projectId = selectedProject.projectId;
+      const initialSessionId = selectedSession?.id || currentSessionId || null;
+      // One-time migration: fold any legacy per-project draft into the new
+      // `:new` slot before reading so existing drafts aren't lost.
+      if (!initialSessionId) {
+        migrateLegacyProjectDraft(projectId);
+      }
+      return getDraft(draftKey(projectId, initialSessionId));
     }
     return '';
   });
@@ -214,6 +230,25 @@ export function useChatComposerState({
   >(null);
   const inputValueRef = useRef(input);
   const selectedProjectId = selectedProject?.projectId;
+
+  // Active session id for draft/history scoping. Null before a session exists
+  // (new/unselected) -> falls back to `:new` keys.
+  const activeSessionId = selectedSession?.id || currentSessionId || null;
+
+  // Debounce timer for persisting the draft, plus a ref to the current draft
+  // key so unmount/session-change can flush the latest value to the right key.
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftKeyRef = useRef<string>(
+    selectedProjectId ? draftKey(selectedProjectId, activeSessionId) : '',
+  );
+
+  // Input history (↑/↓) navigation state.
+  // historyIndexRef: null = editing the live draft; otherwise an index into the
+  //   per-session history array.
+  // stashedDraftRef: the live draft stashed when first entering history via ↑,
+  //   restored when navigating back past the newest entry with ↓.
+  const historyIndexRef = useRef<number | null>(null);
+  const stashedDraftRef = useRef<string>('');
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -527,6 +562,15 @@ export function useChatComposerState({
         return;
       }
 
+      // Record the raw submitted text into this session's input history before
+      // sending. "Submit == recorded" so even a message that fails to deliver
+      // can be recovered via ↑. Use the raw text (no thinking-mode prefix).
+      const submitSessionId = selectedSession?.id || currentSessionId || null;
+      pushHistory(historyKey(selectedProject.projectId, submitSessionId), currentInput);
+      // Leaving history navigation mode now that we've submitted.
+      historyIndexRef.current = null;
+      stashedDraftRef.current = '';
+
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
       const commandInput = currentInput.trimEnd();
@@ -550,6 +594,7 @@ export function useChatComposerState({
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           setInput('');
           inputValueRef.current = '';
+          removeDraft(draftKey(selectedProject.projectId, submitSessionId));
           setAttachedImages([]);
           setUploadingImages(new Map());
           setImageErrors(new Map());
@@ -755,7 +800,13 @@ export function useChatComposerState({
         textareaRef.current.style.height = 'auto';
       }
 
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+      // Clear this session's draft. Cancel any pending debounced write so it
+      // doesn't resurrect the just-sent text.
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      removeDraft(draftKey(selectedProject.projectId, submitSessionId));
     },
     [
       selectedSession,
@@ -795,28 +846,89 @@ export function useChatComposerState({
     inputValueRef.current = input;
   }, [input]);
 
+  // Load the draft for the active (project, session) pair whenever the session
+  // changes, and reset history-navigation state. Flushes any pending debounced
+  // write for the *previous* key before switching so nothing is lost.
+  const prevDraftLoadKeyRef = useRef<string | null>(null);
+  const prevMigratedSessionIdRef = useRef<string | null>(activeSessionId);
   useEffect(() => {
     if (!selectedProjectId) {
       return;
     }
-    const savedInput = safeLocalStorage.getItem(`draft_input_${selectedProjectId}`) || '';
+
+    // New session just got an id (null -> non-null): migrate `:new` draft +
+    // history onto the real session keys before we (re)load.
+    if (!prevMigratedSessionIdRef.current && activeSessionId) {
+      migrateNewSessionKeys(selectedProjectId, activeSessionId);
+    }
+    prevMigratedSessionIdRef.current = activeSessionId;
+
+    const nextKey = draftKey(selectedProjectId, activeSessionId);
+
+    // Flush any pending debounced draft write for the previous key first.
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+      const prevKey = prevDraftLoadKeyRef.current;
+      if (prevKey && prevKey !== nextKey) {
+        setDraft(prevKey, inputValueRef.current);
+      }
+    }
+
+    // If only the session id changed because a brand-new session was just
+    // created (the draft was migrated to nextKey), skip reloading so we don't
+    // clobber what the user is typing right after the first message.
+    if (prevDraftLoadKeyRef.current === nextKey) {
+      return;
+    }
+
+    const savedInput = getDraft(nextKey);
+    draftKeyRef.current = nextKey;
+    prevDraftLoadKeyRef.current = nextKey;
+    historyIndexRef.current = null;
+    stashedDraftRef.current = '';
     setInput((previous) => {
       const next = previous === savedInput ? previous : savedInput;
       inputValueRef.current = next;
       return next;
     });
-  }, [selectedProjectId]);
+  }, [selectedProjectId, activeSessionId]);
 
+  // Persist the draft for the active key with a short debounce. Empty input
+  // removes the key.
   useEffect(() => {
     if (!selectedProjectId) {
       return;
     }
-    if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
-    } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+    const key = draftKey(selectedProjectId, activeSessionId);
+    draftKeyRef.current = key;
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
     }
-  }, [input, selectedProjectId]);
+    draftSaveTimerRef.current = setTimeout(() => {
+      setDraft(key, input);
+      draftSaveTimerRef.current = null;
+    }, 300);
+    return () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+    };
+  }, [input, selectedProjectId, activeSessionId]);
+
+  // Flush the pending draft on unmount so a quick navigate-away doesn't drop it.
+  useEffect(() => {
+    return () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+        if (draftKeyRef.current) {
+          setDraft(draftKeyRef.current, inputValueRef.current);
+        }
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!textareaRef.current) {
@@ -847,6 +959,9 @@ export function useChatComposerState({
       inputValueRef.current = newValue;
       setCursorPosition(cursorPos);
 
+      // Any manual edit exits input-history navigation mode.
+      historyIndexRef.current = null;
+
       if (!newValue.trim()) {
         event.target.style.height = 'auto';
         setIsTextareaExpanded(false);
@@ -858,6 +973,23 @@ export function useChatComposerState({
     },
     [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
   );
+
+  // Apply a value selected from input history: update state + mirror ref, then
+  // place the caret at the end of the (async, controlled) textarea value.
+  const applyHistoryValue = useCallback((value: string) => {
+    setInput(value);
+    inputValueRef.current = value;
+    resetCommandMenuState();
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+        el.style.height = 'auto';
+        el.style.height = `${Math.max(22, el.scrollHeight)}px`;
+      }
+    });
+  }, [resetCommandMenuState]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -872,6 +1004,60 @@ export function useChatComposerState({
       if (event.key === 'Tab' && !showFileDropdown && !showCommandMenu) {
         event.preventDefault();
         cyclePermissionMode();
+        return;
+      }
+
+      // Shell-style input history navigation with ↑/↓. Only when neither the
+      // command menu nor the file-mention dropdown is open (they own ↑/↓ for
+      // candidate selection) and not during IME composition.
+      if (
+        (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+        !showCommandMenu &&
+        !showFileDropdown &&
+        !event.nativeEvent.isComposing &&
+        selectedProject
+      ) {
+        const el = event.currentTarget;
+        const key = historyKey(selectedProject.projectId, activeSessionId);
+
+        if (event.key === 'ArrowUp') {
+          // Only hijack ↑ at the very start of the text (first line, col 0),
+          // so multi-line caret movement still works.
+          if (el.selectionStart === 0 && el.selectionEnd === 0) {
+            const history = getHistory(key);
+            if (history.length === 0) {
+              return;
+            }
+            event.preventDefault();
+            if (historyIndexRef.current === null) {
+              stashedDraftRef.current = inputValueRef.current;
+              historyIndexRef.current = history.length - 1;
+            } else {
+              historyIndexRef.current = Math.max(0, historyIndexRef.current - 1);
+            }
+            applyHistoryValue(history[historyIndexRef.current]);
+          }
+          return;
+        }
+
+        // ArrowDown: only when already navigating history and the caret is at
+        // the very end of the text.
+        if (
+          historyIndexRef.current !== null &&
+          el.selectionStart === el.value.length &&
+          el.selectionEnd === el.value.length
+        ) {
+          const history = getHistory(key);
+          event.preventDefault();
+          if (historyIndexRef.current < history.length - 1) {
+            historyIndexRef.current += 1;
+            applyHistoryValue(history[historyIndexRef.current]);
+          } else {
+            // Past the newest entry -> restore the stashed live draft.
+            historyIndexRef.current = null;
+            applyHistoryValue(stashedDraftRef.current);
+          }
+        }
         return;
       }
 
@@ -890,10 +1076,13 @@ export function useChatComposerState({
       }
     },
     [
+      activeSessionId,
+      applyHistoryValue,
       cyclePermissionMode,
       handleCommandMenuKeyDown,
       handleFileMentionsKeyDown,
       handleSubmit,
+      selectedProject,
       sendByCtrlEnter,
       showCommandMenu,
       showFileDropdown,
