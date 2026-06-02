@@ -204,6 +204,21 @@ export function normalizeProjectPath(inputPath: string): string {
 }
 
 /**
+ * Returns true when a project/session path lives inside a tool-managed git
+ * worktree (e.g. codex agent worktrees at ~/.codex/worktrees/<hash>/<proj>,
+ * or a project-local .worktrees/ dir). These are subtask/agent runs and must
+ * not surface as standalone projects/sessions in the UI.
+ */
+export function isWorktreeProjectPath(projectPath: string | null | undefined): boolean {
+  if (!projectPath) {
+    return false;
+  }
+
+  const norm = projectPath.split('\\').join('/');
+  return norm.includes('/.codex/worktrees/') || norm.includes('/.worktrees/');
+}
+
+/**
  * Validates that a user-supplied workspace path is safe to use.
  *
  * Call this before any filesystem mutation that creates or registers projects.

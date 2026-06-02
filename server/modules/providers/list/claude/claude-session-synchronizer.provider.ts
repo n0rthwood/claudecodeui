@@ -7,6 +7,7 @@ import {
   buildLookupMap,
   extractFirstValidJsonlData,
   findFilesRecursivelyCreatedAfter,
+  isWorktreeProjectPath,
   normalizeSessionName,
   readFileTimestamps,
 } from '@/shared/utils.js';
@@ -53,6 +54,13 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
+      // Skip sessions whose cwd lives inside a tool-managed git worktree
+      // (e.g. codex agent worktrees). These are subtask/agent runs and must
+      // not surface as standalone projects/sessions in the UI.
+      if (isWorktreeProjectPath(parsed.projectPath)) {
+        continue;
+      }
+
       const timestamps = await readFileTimestamps(filePath);
       sessionsDb.createSession(
         parsed.sessionId,
@@ -90,6 +98,11 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
+      return null;
+    }
+
+    // Skip tool-managed worktree sessions (see synchronize()).
+    if (isWorktreeProjectPath(parsed.projectPath)) {
       return null;
     }
 

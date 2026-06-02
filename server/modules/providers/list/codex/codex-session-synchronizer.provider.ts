@@ -7,6 +7,7 @@ import {
   buildLookupMap,
   extractFirstValidJsonlData,
   findFilesRecursivelyCreatedAfter,
+  isWorktreeProjectPath,
   normalizeSessionName,
   readFileTimestamps,
 } from '@/shared/utils.js';
@@ -40,6 +41,14 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     for (const filePath of files) {
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
+        continue;
+      }
+
+      // Skip sessions whose cwd lives inside a tool-managed git worktree
+      // (e.g. codex agent worktrees at ~/.codex/worktrees/<hash>/<proj>).
+      // These are subtask/agent runs and must not surface as standalone
+      // projects/sessions in the UI.
+      if (isWorktreeProjectPath(parsed.projectPath)) {
         continue;
       }
 
@@ -78,6 +87,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
+      return null;
+    }
+
+    // Skip tool-managed worktree sessions (see synchronize()).
+    if (isWorktreeProjectPath(parsed.projectPath)) {
       return null;
     }
 

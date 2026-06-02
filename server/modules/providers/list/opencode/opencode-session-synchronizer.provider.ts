@@ -7,6 +7,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 import {
   getOpenCodeDatabasePath,
+  isWorktreeProjectPath,
   normalizeProviderTimestamp,
   normalizeSessionName,
   readJsonRecord,
@@ -108,6 +109,13 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
+      return null;
+    }
+
+    // Skip sessions whose directory/worktree lives inside a tool-managed git
+    // worktree. These are subtask/agent runs and must not surface as standalone
+    // projects/sessions in the UI.
+    if (isWorktreeProjectPath(projectPath)) {
       return null;
     }
 

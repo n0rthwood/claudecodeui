@@ -5,7 +5,7 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, isWorktreeProjectPath } from '@/shared/utils.js';
 
 type SessionSummary = {
   id: string;
@@ -228,6 +228,13 @@ export async function getProjectsWithSessions(
 
     const projectId = row.project_id;
     const projectPath = row.project_path;
+
+    // Defensive double-guard: never surface tool-managed worktree projects
+    // (e.g. codex agent worktrees) even if historical/stale rows remain in DB.
+    // The primary defense is skipping them at session-synchronization time.
+    if (isWorktreeProjectPath(projectPath)) {
+      continue;
+    }
 
     broadcastProgress({
       phase: 'loading',
