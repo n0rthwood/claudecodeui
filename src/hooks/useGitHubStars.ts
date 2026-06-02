@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
+import { authenticatedFetch } from '../utils/api';
+
 const CACHE_KEY = 'CLOUDCLI_GITHUB_STARS';
 const DISMISS_KEY = 'CLOUDCLI_HIDE_GITHUB_STAR';
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
@@ -38,7 +40,9 @@ export const useGitHubStars = (owner: string, repo: string) => {
 
     const fetchStars = async () => {
       try {
-        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
+        // Backend proxy: server-side cached + rate-limit safe. Relative URL so
+        // it works under any basename / reverse proxy.
+        const response = await authenticatedFetch('/api/version/stars');
         if (!response.ok) return;
         const data = await response.json();
         const count = data.stargazers_count;
