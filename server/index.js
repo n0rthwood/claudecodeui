@@ -12,7 +12,7 @@ import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
-import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
+import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveServableImage, validateWorkspacePath } from '@/shared/utils.js';
 import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 
@@ -522,6 +522,62 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
 
     } catch (error) {
         console.error('Error serving binary file:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+});
+
+// Image proxy: safely serve a local image off disk for <img> rendering.
+//
+// Contract: GET /api/image?path=<encodeURIComponent(absOrRelPath)>[&projectId=<id>]
+//   - `path` is required. Absolute paths are used as-is; relative paths are
+//     resolved against the project root for `projectId` (relative + no projectId
+//     -> 400).
+//   - Auth is enforced by `authenticateToken` (platform mode auto-passes; OSS
+//     mode reads Bearer header, with ?token= fallback). Never anonymous.
+//   - There is NO directory allow-list (deliberate product decision). The image
+//     extension whitelist + magic-byte sniff in `resolveServableImage` is what
+//     keeps this an image proxy and not an arbitrary file reader.
+app.get('/api/image', authenticateToken, async (req, res) => {
+    try {
+        const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+        const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+
+        let projectRoot = null;
+        if (projectId) {
+            // Resolve relative paths against the project's real root; an unknown
+            // projectId simply yields no root, which only matters for relative paths.
+            projectRoot = await projectsDb.getProjectPathById(projectId);
+        }
+
+        const result = await resolveServableImage(requestedPath, mime.lookup, projectRoot);
+        if (!result.ok) {
+            return res.status(result.status).json({ error: result.error });
+        }
+
+        res.setHeader('Content-Type', result.contentType);
+        res.setHeader('Content-Length', String(result.size));
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        if (result.isSvg) {
+            // <img> never executes SVG script, but a stricter CSP/sandbox guards
+            // against someone opening the response URL directly in a new tab.
+            res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+        }
+
+        const fileStream = fs.createReadStream(result.realPath);
+        fileStream.on('error', (error) => {
+            console.error('Error streaming image:', error);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Error reading image' });
+            } else {
+                res.destroy();
+            }
+        });
+        fileStream.pipe(res);
+    } catch (error) {
+        console.error('Error serving image:', error);
         if (!res.headersSent) {
             res.status(500).json({ error: error.message });
         }

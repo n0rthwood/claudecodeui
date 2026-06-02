@@ -4,6 +4,7 @@ import {
   access,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   readlink,
@@ -1158,5 +1159,263 @@ export async function extractFirstValidJsonlData<T>(
   }
 
   return null;
+}
+
+// ---------------------------
+//----------------- IMAGE PROXY SERVING UTILITIES ------------
+/**
+ * Maximum size (bytes) of an image the proxy endpoint will serve. Larger files
+ * are rejected with HTTP 413 so a single request cannot stream an arbitrarily
+ * large file off disk through the public proxy.
+ */
+export const IMAGE_PROXY_MAX_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Extensions the image proxy is willing to serve. The endpoint does NOT enforce
+ * a directory allow-list (a deliberate product decision), so this whitelist plus
+ * magic-byte sniffing is the line that keeps it an image proxy rather than an
+ * arbitrary file reader.
+ */
+export const IMAGE_PROXY_ALLOWED_EXTENSIONS = new Set<string>([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.bmp',
+  '.avif',
+  '.ico',
+  '.tiff',
+  '.tif',
+]);
+
+/**
+ * Discriminated result returned by {@link resolveServableImage}. The `status`
+ * field maps 1:1 onto the HTTP status the route should return; `ok` results
+ * additionally carry the canonical path, content type, and a flag marking SVGs
+ * so the route can apply an extra Content-Security-Policy.
+ */
+export type ServableImageResult =
+  | {
+      ok: true;
+      realPath: string;
+      contentType: string;
+      size: number;
+      isSvg: boolean;
+    }
+  | {
+      ok: false;
+      status: 400 | 404 | 413 | 415 | 500;
+      error: string;
+    };
+
+/**
+ * Sniffs the leading bytes of a candidate file and returns a concrete image MIME
+ * type when the magic number matches a known raster format.
+ *
+ * SVG is intentionally excluded: it is XML text with no fixed magic number, so
+ * the route validates it by extension/lookup instead. A `null` return means the
+ * bytes did not match any recognized image signature and the caller should treat
+ * the file as a non-image (HTTP 415).
+ */
+function sniffImageMimeFromMagicBytes(header: Buffer): string | null {
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    header.length >= 8
+    && header[0] === 0x89
+    && header[1] === 0x50
+    && header[2] === 0x4e
+    && header[3] === 0x47
+    && header[4] === 0x0d
+    && header[5] === 0x0a
+    && header[6] === 0x1a
+    && header[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  // JPEG: FF D8 FF
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  // GIF: "GIF87a" or "GIF89a"
+  if (header.length >= 6 && header.toString('ascii', 0, 6).match(/^GIF8[79]a$/)) {
+    return 'image/gif';
+  }
+
+  // WEBP: "RIFF"...."WEBP"
+  if (
+    header.length >= 12
+    && header.toString('ascii', 0, 4) === 'RIFF'
+    && header.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+
+  // BMP: "BM"
+  if (header.length >= 2 && header[0] === 0x42 && header[1] === 0x4d) {
+    return 'image/bmp';
+  }
+
+  // TIFF: "II*\0" (little-endian) or "MM\0*" (big-endian)
+  if (
+    header.length >= 4
+    && ((header[0] === 0x49 && header[1] === 0x49 && header[2] === 0x2a && header[3] === 0x00)
+      || (header[0] === 0x4d && header[1] === 0x4d && header[2] === 0x00 && header[3] === 0x2a))
+  ) {
+    return 'image/tiff';
+  }
+
+  // ICO: 00 00 01 00
+  if (
+    header.length >= 4
+    && header[0] === 0x00
+    && header[1] === 0x00
+    && header[2] === 0x01
+    && header[3] === 0x00
+  ) {
+    return 'image/x-icon';
+  }
+
+  // AVIF / HEIF: ....ftyp....("avif"|"avis"|"heic"|"heif"|"mif1") at byte 4..8 brand
+  if (header.length >= 12 && header.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = header.toString('ascii', 8, 12);
+    if (['avif', 'avis', 'heic', 'heif', 'mif1', 'msf1'].includes(brand)) {
+      return brand === 'heic' || brand === 'heif' ? 'image/heif' : 'image/avif';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves a user-supplied path into a safe, servable image for the public image
+ * proxy endpoint.
+ *
+ * Security contract (the endpoint deliberately allows ANY directory, so these
+ * checks are the only thing preventing arbitrary file reads):
+ *  - relative paths require a resolved `projectRoot`, otherwise 400;
+ *  - the candidate is passed through `realpath` so symlinks resolve to their true
+ *    target before any check (missing files -> 404);
+ *  - the real path's extension must be in {@link IMAGE_PROXY_ALLOWED_EXTENSIONS};
+ *  - non-SVG files must additionally pass magic-byte sniffing AND `mime.lookup`
+ *    must resolve to an `image/*` type; SVGs are validated by extension/lookup
+ *    only (no magic number) and flagged so the route can sandbox them via CSP;
+ *  - files larger than {@link IMAGE_PROXY_MAX_BYTES} are rejected with 413.
+ *
+ * The caller is responsible for authentication and for streaming the bytes; this
+ * helper performs no auth and opens the file only to read a small header.
+ *
+ * @param requestedPath raw `path` query value (absolute or project-relative)
+ * @param mimeLookup    `mime.lookup` from the `mime-types` package
+ * @param projectRoot   resolved project root used to anchor relative paths, or
+ *                      `null`/`undefined` when no project context is available
+ */
+export async function resolveServableImage(
+  requestedPath: string,
+  mimeLookup: (pathOrExtension: string) => string | false,
+  projectRoot?: string | null,
+): Promise<ServableImageResult> {
+  const trimmed = typeof requestedPath === 'string' ? requestedPath.trim() : '';
+  if (!trimmed) {
+    return { ok: false, status: 400, error: 'Query parameter "path" is required' };
+  }
+
+  let candidate: string;
+  if (path.isAbsolute(trimmed)) {
+    candidate = path.resolve(trimmed);
+  } else {
+    if (!projectRoot) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Relative path requires a valid "projectId" to resolve against',
+      };
+    }
+    candidate = path.resolve(projectRoot, trimmed);
+  }
+
+  // Resolve symlinks to their canonical target before any further check so a
+  // symlink cannot be used to dodge the image checks or smuggle a path.
+  let realPath: string;
+  try {
+    realPath = await realpath(candidate);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { ok: false, status: 404, error: 'Image not found' };
+    }
+    return { ok: false, status: 500, error: 'Failed to resolve image path' };
+  }
+
+  const extension = path.extname(realPath).toLowerCase();
+  if (!IMAGE_PROXY_ALLOWED_EXTENSIONS.has(extension)) {
+    return { ok: false, status: 415, error: 'Unsupported media type: not an allowed image extension' };
+  }
+
+  let fileStat;
+  try {
+    fileStat = await stat(realPath);
+  } catch {
+    return { ok: false, status: 404, error: 'Image not found' };
+  }
+
+  if (!fileStat.isFile()) {
+    return { ok: false, status: 415, error: 'Unsupported media type: not a regular file' };
+  }
+
+  if (fileStat.size > IMAGE_PROXY_MAX_BYTES) {
+    return { ok: false, status: 413, error: 'Image exceeds maximum allowed size' };
+  }
+
+  const lookedUp = mimeLookup(realPath);
+  const isSvg = extension === '.svg' || lookedUp === 'image/svg+xml';
+
+  if (isSvg) {
+    // SVG has no magic number; trust the extension and serve as image/svg+xml,
+    // and let the route apply a restrictive CSP/sandbox header.
+    return {
+      ok: true,
+      realPath,
+      contentType: 'image/svg+xml',
+      size: fileStat.size,
+      isSvg: true,
+    };
+  }
+
+  if (typeof lookedUp !== 'string' || !lookedUp.startsWith('image/')) {
+    return { ok: false, status: 415, error: 'Unsupported media type: not an image' };
+  }
+
+  // Magic-byte sniff: read a small header and confirm a known raster signature.
+  let header: Buffer;
+  try {
+    const handle = await open(realPath, 'r');
+    try {
+      const buffer = Buffer.alloc(16);
+      const { bytesRead } = await handle.read(buffer, 0, 16, 0);
+      header = buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { ok: false, status: 500, error: 'Failed to read image' };
+  }
+
+  const sniffed = sniffImageMimeFromMagicBytes(header);
+  if (!sniffed) {
+    return { ok: false, status: 415, error: 'Unsupported media type: content is not a recognized image' };
+  }
+
+  // Prefer the sniffed MIME (trusted bytes) over the extension-based lookup.
+  return {
+    ok: true,
+    realPath,
+    contentType: sniffed,
+    size: fileStat.size,
+    isSvg: false,
+  };
 }
 
