@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '../../../utils/api';
+import { dispatchUnauthorized, isStoredTokenExpired } from '../../../utils/authEvents';
 import type { LLMProvider } from '../../../types/app';
 
 export type SessionMessageMatch = {
@@ -82,7 +83,16 @@ export function useSessionMessageSearch(
         esRef.current = null;
       };
       es.addEventListener('done', finish);
-      es.addEventListener('error', finish);
+      // EventSource cannot send headers, so the token rides in the query string
+      // and an expired one fails the handshake. Be conservative: only prompt a
+      // re-login when we can PROVE the stored token is past its exp, otherwise a
+      // transient network blip would falsely pop the modal.
+      es.addEventListener('error', () => {
+        finish();
+        if (isStoredTokenExpired()) {
+          dispatchUnauthorized();
+        }
+      });
     }, DEBOUNCE_MS);
 
     return () => {

@@ -1,4 +1,5 @@
 import { api } from '../../../utils/api';
+import { dispatchUnauthorized, isStoredTokenExpired } from '../../../utils/authEvents';
 import type {
   BrowseFilesystemResponse,
   CloneProgressEvent,
@@ -181,6 +182,12 @@ export const cloneWorkspaceWithProgress = (
     };
 
     eventSource.onerror = () => {
+      // Token rides in the query string here too; surface a re-login only when
+      // the stored token is provably expired (conservative to avoid false pops
+      // on a dropped connection mid-clone).
+      if (isStoredTokenExpired()) {
+        dispatchUnauthorized();
+      }
       settle(() => reject(new Error('Connection lost during clone')));
     };
   });

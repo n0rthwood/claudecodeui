@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 
 import { api } from '../../../utils/api';
+import { dispatchUnauthorized, isStoredTokenExpired } from '../../../utils/authEvents';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type {
@@ -412,6 +413,12 @@ export function useSidebarController({
       setSearchProgress(null);
       if (accumulated.length === 0) {
         setConversationResults({ results: [], totalMatches: 0, query });
+      }
+      // The search SSE carries its token in the query string; an expired token
+      // fails the handshake. Only prompt re-login when we can prove expiry, to
+      // avoid false positives from a flaky connection.
+      if (isStoredTokenExpired()) {
+        dispatchUnauthorized();
       }
     });
 

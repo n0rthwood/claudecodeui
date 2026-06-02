@@ -1,4 +1,14 @@
 import { IS_PLATFORM } from "../constants/config";
+import { dispatchTokenRefreshed, dispatchUnauthorized } from "./authEvents";
+
+/**
+ * Auth-flow endpoints that must NOT trigger the global re-login modal on a 401.
+ * `/api/auth/user` returns 401 during the very first auth-status probe (before
+ * a session exists) and `/api/auth/login` returns 401 on a wrong password — in
+ * both cases the caller already handles the failure, and hijacking it would
+ * loop the modal. We only intercept 401s on genuine protected endpoints.
+ */
+const AUTH_ENDPOINT_PATTERN = /\/api\/auth\//;
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
@@ -22,10 +32,28 @@ export const authenticatedFetch = (url, options = {}) => {
       ...options.headers,
     },
   }).then((response) => {
+    // Sliding renewal: backend stamps a fresh token past the half-life. Mirror
+    // it into localStorage AND broadcast so AuthContext updates React state
+    // (which in turn lets the WebSocket reconnect with the new token).
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (refreshedToken) {
       localStorage.setItem('auth-token', refreshedToken);
+      dispatchTokenRefreshed(refreshedToken);
     }
+
+    // Global 401/403 interception (OSS only). Skip auth endpoints so we don't
+    // hijack the login / initial-status flows. We clear the stale token and
+    // signal AuthContext to prompt re-login, but still hand the response back
+    // to the caller untouched.
+    if (
+      !IS_PLATFORM &&
+      (response.status === 401 || response.status === 403) &&
+      !AUTH_ENDPOINT_PATTERN.test(url)
+    ) {
+      localStorage.removeItem('auth-token');
+      dispatchUnauthorized();
+    }
+
     return response;
   });
 };

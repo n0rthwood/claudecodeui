@@ -1,7 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
+import {
+  AUTH_TOKEN_REFRESHED_EVENT,
+  AUTH_UNAUTHORIZED_EVENT,
+} from '../../../utils/authEvents';
 import { AUTH_ERROR_MESSAGES, AUTH_TOKEN_STORAGE_KEY } from '../constants';
+import ReauthModal from '../view/ReauthModal';
 import type {
   AuthContextValue,
   AuthProviderProps,
@@ -41,11 +46,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Whether the blocking re-login modal is showing. OSS mode only; platform
+  // mode never sets this (the unauthorized event is suppressed upstream).
+  const [reauthOpen, setReauthOpen] = useState(false);
 
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
     setUser(nextUser);
     setToken(nextToken);
     persistToken(nextToken);
+    // A fresh session resolves any outstanding re-auth prompt.
+    setReauthOpen(false);
   }, []);
 
   const clearSession = useCallback(() => {
@@ -127,6 +137,39 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     void checkAuthStatus();
   }, [checkAuthStatus, checkOnboardingStatus]);
+
+  // Bridge the framework-agnostic auth events (fired by api.js / WebSocket /
+  // EventSource consumers) into React state. Platform mode has no token, so we
+  // skip wiring entirely there.
+  useEffect(() => {
+    if (IS_PLATFORM) return;
+
+    const handleRefreshed = (event: Event) => {
+      const nextToken = (event as CustomEvent<string>).detail;
+      if (!nextToken) return;
+      // Keep localStorage authoritative (api.js already wrote it) and sync the
+      // token state so dependents (WebSocketContext) reconnect with it.
+      persistToken(nextToken);
+      setToken(nextToken);
+    };
+
+    const handleUnauthorized = () => {
+      // Drop the dead token from state so nothing reuses it; in particular the
+      // WebSocket effect re-runs with a null token and stops reconnecting.
+      // Setting null when already null is a no-op, so this is safe to fire on
+      // every 401 (idempotent). The modal flag is likewise idempotent, giving
+      // us single-flight behaviour without reading current state.
+      setToken(null);
+      setReauthOpen(true);
+    };
+
+    window.addEventListener(AUTH_TOKEN_REFRESHED_EVENT, handleRefreshed);
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+    return () => {
+      window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, handleRefreshed);
+      window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+    };
+  }, []);
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {
@@ -218,5 +261,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
     ],
   );
 
-  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={contextValue}>
+      {children}
+      {!IS_PLATFORM && <ReauthModal open={reauthOpen} />}
+    </AuthContext.Provider>
+  );
 }
