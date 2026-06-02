@@ -3,6 +3,8 @@ import React, { memo, useMemo, useCallback } from 'react';
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
 
+import { ChatImage } from '../view/subcomponents/ChatImage';
+
 import { getToolConfig } from './configs/toolConfigs';
 import { OneLineDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
 import { PlanDisplay } from './components/PlanDisplay';
@@ -124,6 +126,30 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   }
 
   if (!displayConfig) return null;
+
+  // Image result: render the read target inline through ChatImage (auth proxy).
+  if (displayConfig.type === 'image' && mode === 'result') {
+    let parsedInput: any = toolInput;
+    if (typeof toolInput === 'string') {
+      try {
+        parsedInput = JSON.parse(toolInput);
+      } catch {
+        parsedInput = toolInput;
+      }
+    }
+    if (!displayConfig.isImage?.(parsedInput)) return null;
+    const imageProps = displayConfig.getImageProps?.(parsedInput, { selectedProject }) || {};
+    if (!imageProps.filePath) return null;
+    return (
+      <div className="mt-2">
+        <ChatImage
+          filePath={imageProps.filePath}
+          projectId={imageProps.projectId}
+          alt={imageProps.alt}
+        />
+      </div>
+    );
+  }
 
   if (displayConfig.type === 'one-line') {
     const value = displayConfig.getValue?.(parsedData) || '';

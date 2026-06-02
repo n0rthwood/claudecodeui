@@ -13,6 +13,7 @@ import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
 import { Markdown } from './Markdown';
+import { ChatImage } from './ChatImage';
 import MessageCopyControl from './MessageCopyControl';
 
 type DiffLine = {
@@ -126,12 +127,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
             {message.images && message.images.length > 0 && (
               <div className="mt-2 grid grid-cols-2 gap-2">
                 {message.images.map((img, idx) => (
-                  <img
+                  <ChatImage
                     key={img.name || idx}
                     src={img.data}
                     alt={img.name}
-                    className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
-                    onClick={() => window.open(img.data, '_blank')}
+                    className="my-0"
                   />
                 ))}
               </div>
@@ -224,7 +224,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                 )}
 
                 {/* Tool Result Section */}
-                {message.toolResult && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
+                {message.toolResult && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult, message.toolInput) && (
                   message.toolResult.isError ? (
                     // Error results - red error box with content
                     <div

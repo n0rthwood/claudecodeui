@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useContext, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -8,6 +8,16 @@ import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
+import { ChatImage } from './ChatImage';
+
+/**
+ * Provides the current project's DB `projectId` to markdown image rendering so
+ * bare/relative image paths can be resolved through the authenticated proxy.
+ * Optional — markdown still renders direct (data:/http) images without it.
+ */
+const MarkdownProjectContext = React.createContext<string | undefined>(undefined);
+
+export const MarkdownProjectProvider = MarkdownProjectContext.Provider;
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -116,8 +126,15 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
   );
 };
 
+const MarkdownImage = ({ src, alt }: { src?: string; alt?: string }) => {
+  const projectId = useContext(MarkdownProjectContext);
+  // ChatImage decides direct-URL vs proxy-path based on the src scheme.
+  return <ChatImage src={src} alt={alt} projectId={projectId} />;
+};
+
 const markdownComponents = {
   code: CodeBlock,
+  img: MarkdownImage,
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="my-2 border-l-4 border-gray-300 pl-4 italic text-gray-600 dark:border-gray-600 dark:text-gray-400">
       {children}

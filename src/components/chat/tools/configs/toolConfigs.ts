@@ -1,7 +1,17 @@
 /**
  * Centralized tool configuration registry
- * Defines display behavior for all tool types 
+ * Defines display behavior for all tool types
  */
+
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif'];
+
+/** True when the given path/string ends with a known image extension. */
+export function isImagePath(value: unknown): boolean {
+  if (typeof value !== 'string' || !value) return false;
+  // Strip any query/hash, lower-case for extension comparison.
+  const clean = value.split('?')[0].split('#')[0].toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => clean.endsWith(ext));
+}
 
 export interface ToolDisplayConfig {
   input: {
@@ -31,13 +41,16 @@ export interface ToolDisplayConfig {
   result?: {
     hidden?: boolean;
     hideOnSuccess?: boolean;
-    type?: 'one-line' | 'collapsible' | 'plan' | 'special';
+    type?: 'one-line' | 'collapsible' | 'plan' | 'special' | 'image';
     title?: string | ((result: any) => string);
     defaultOpen?: boolean;
     // Special result handlers
     contentType?: 'markdown' | 'file-list' | 'todo-list' | 'text' | 'success-message' | 'task' | 'question-answer';
     getMessage?: (result: any) => string;
-    getContentProps?: (result: any) => any;
+    getContentProps?: (result: any, helpers?: any) => any;
+    // image result: decide whether the read target is an image and how to render it
+    isImage?: (input: any) => boolean;
+    getImageProps?: (input: any, helpers?: any) => { filePath?: string; projectId?: string; alt?: string };
   };
 }
 
@@ -87,7 +100,41 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       }
     },
     result: {
-      hidden: true
+      // Render an inline image when the read target is an image file;
+      // otherwise the result is hidden (handled via isImage in shouldHideToolResult).
+      type: 'image',
+      hidden: true,
+      isImage: (input) => isImagePath(input?.file_path),
+      getImageProps: (input, helpers) => ({
+        filePath: input?.file_path,
+        projectId: helpers?.selectedProject?.projectId,
+        alt: input?.file_path
+      })
+    }
+  },
+
+  NotebookRead: {
+    input: {
+      type: 'one-line',
+      label: 'Read',
+      getValue: (input) => input.notebook_path || input.file_path || '',
+      action: 'open-file',
+      colorScheme: {
+        primary: 'text-gray-700 dark:text-gray-300',
+        background: '',
+        border: 'border-gray-300 dark:border-gray-600',
+        icon: 'text-gray-500 dark:text-gray-400'
+      }
+    },
+    result: {
+      type: 'image',
+      hidden: true,
+      isImage: (input) => isImagePath(input?.notebook_path || input?.file_path),
+      getImageProps: (input, helpers) => ({
+        filePath: input?.notebook_path || input?.file_path,
+        projectId: helpers?.selectedProject?.projectId,
+        alt: input?.notebook_path || input?.file_path
+      })
     }
   },
 
@@ -559,10 +606,25 @@ export function getToolConfig(toolName: string): ToolDisplayConfig {
 /**
  * Check if a tool result should be hidden
  */
-export function shouldHideToolResult(toolName: string, toolResult: any): boolean {
+export function shouldHideToolResult(toolName: string, toolResult: any, toolInput?: any): boolean {
   const config = getToolConfig(toolName);
 
   if (!config.result) return false;
+
+  // Image results: only render (don't hide) when the read target is an image.
+  if (config.result.type === 'image') {
+    let parsedInput = toolInput;
+    if (typeof toolInput === 'string') {
+      try {
+        parsedInput = JSON.parse(toolInput);
+      } catch {
+        parsedInput = toolInput;
+      }
+    }
+    const isImage = config.result.isImage?.(parsedInput);
+    // Hide unless it's an image and the read succeeded.
+    return !(isImage && toolResult && !toolResult.isError);
+  }
 
   // Always hidden
   if (config.result.hidden) return true;
