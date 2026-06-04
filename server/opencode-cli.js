@@ -82,10 +82,54 @@ function readOpenCodeTokenUsage(sessionId) {
   }
 }
 
+// OpenCode scopes every session to the directory it was created in. When a
+// session is resumed (`opencode run --session <id>`), OpenCode resolves the
+// project from the *current working directory* and reports "Session not found"
+// if that directory does not match. The client-supplied cwd can be wrong when a
+// session is opened via a deep link (e.g. /session/:id) before its owning
+// project is resolved, so we recover the authoritative directory straight from
+// the session record (falling back to the project worktree).
+function readOpenCodeSessionDirectory(sessionId) {
+  const dbPath = getOpenCodeDatabasePath();
+  if (!sessionId || !fsSync.existsSync(dbPath)) {
+    return null;
+  }
+
+  let db = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const row = db.prepare(`
+      SELECT s.directory AS directory, p.worktree AS worktree
+      FROM session s
+      LEFT JOIN project p ON p.id = s.project_id
+      WHERE s.id = ?
+    `).get(sessionId);
+
+    if (!row) {
+      return null;
+    }
+
+    const directory = typeof row.directory === 'string' ? row.directory.trim() : '';
+    const worktree = typeof row.worktree === 'string' ? row.worktree.trim() : '';
+    const resolved = directory || worktree;
+    return resolved && fsSync.existsSync(resolved) ? resolved : null;
+  } catch {
+    return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+}
+
 async function spawnOpenCode(command, options = {}, ws) {
   return new Promise((resolve, reject) => {
     const { sessionId, projectPath, cwd, model, sessionSummary } = options;
-    const workingDir = cwd || projectPath || process.cwd();
+    // When resuming an existing session, the directory it was created in is the
+    // only cwd OpenCode will accept; prefer it over the (possibly stale) cwd the
+    // client sent so deep-linked resumes don't fail with "Session not found".
+    const resumeDir = sessionId ? readOpenCodeSessionDirectory(sessionId) : null;
+    const workingDir = resumeDir || cwd || projectPath || process.cwd();
     const processKey = sessionId || Date.now().toString();
     let capturedSessionId = sessionId || null;
     let sessionCreatedSent = false;
