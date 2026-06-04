@@ -30,6 +30,43 @@ const getPermissionModesForProvider = (provider: LLMProvider): PermissionMode[] 
   return ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
 };
 
+const getGlobalPermissionMode = (provider: LLMProvider): PermissionMode => {
+  try {
+    if (provider === 'codex') {
+      const raw = localStorage.getItem('codex-settings');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { permissionMode?: PermissionMode };
+        const mode = parsed.permissionMode;
+        const validModes = getPermissionModesForProvider('codex');
+        if (mode && validModes.includes(mode)) {
+          return mode;
+        }
+      }
+    } else if (provider === 'gemini') {
+      const raw = localStorage.getItem('gemini-settings');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { permissionMode?: PermissionMode };
+        const mode = parsed.permissionMode;
+        const validModes = getPermissionModesForProvider('gemini');
+        if (mode && validModes.includes(mode)) {
+          return mode;
+        }
+      }
+    } else if (provider === 'claude') {
+      const raw = localStorage.getItem('claude-settings');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { skipPermissions?: boolean };
+        if (parsed.skipPermissions === true) {
+          return 'bypassPermissions';
+        }
+      }
+    }
+  } catch {
+    // ignore parse errors, fall through to default
+  }
+  return 'default';
+};
+
 interface UseChatProviderStateArgs {
   selectedSession: ProjectSession | null;
   selectedProject: Project | null;
@@ -55,7 +92,10 @@ type ChangeActiveModelApiResponse = {
 };
 
 export function useChatProviderState({ selectedSession, selectedProject }: UseChatProviderStateArgs) {
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+    const currentProvider = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
+    return getGlobalPermissionMode(currentProvider);
+  });
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(() => {
     return (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
@@ -262,13 +302,13 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
   }, [providerModelCatalog.opencode, opencodeModel]);
 
   useEffect(() => {
-    if (!selectedSession?.id) {
-      return;
-    }
-
-    const savedMode = localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null;
     const validModes = getPermissionModesForProvider(provider);
-    setPermissionMode(savedMode && validModes.includes(savedMode) ? savedMode : 'default');
+    if (selectedSession?.id) {
+      const savedMode = localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null;
+      setPermissionMode(savedMode && validModes.includes(savedMode) ? savedMode : getGlobalPermissionMode(provider));
+    } else {
+      setPermissionMode(getGlobalPermissionMode(provider));
+    }
   }, [selectedSession?.id, provider]);
 
   useEffect(() => {
