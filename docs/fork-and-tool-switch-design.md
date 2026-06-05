@@ -423,16 +423,21 @@ User      Frontend            WS / forkSessionService     sessionsService.fetchH
 - 触发一次后台同步器，确认 lineage 列未被清空。
 - 历史截断在超长 session 上生效，不撑爆目标模型。
 
-### 阶段 3：前端选择器 + fork 徽章
+### 阶段 3：前端两级选择器（工具 + 模型）+ fork 徽章
+
+> 用户反馈并入：① 新建对话"模型搜索空白"（已修，见 §13 进展）；② 需要**两级选择**（先工具、再该工具下的具体模型）；③ **已有对话完全没有改 tool/model 的入口**，必须补。两级选择器同时服务"换模型=resume"与"换工具=fork"。
 
 **交付物**
-- composer tool + model 选择器、预填、`explicitModel` 信号（§5.1-5.2）。
-- fork 提示与 in-flight 锁（§5.3、§8.6）。
-- `session_created` 后切路由到新 id（§5.4）。
-- 侧栏 fork 徽章 + 回链（§5.5），summary 扩展 lineage 字段。
+- **抽出可复用组件** `ToolModelSelector`：从 `ProviderSelectionEmptyState.tsx:124-296` 已有的 Command 分组渲染（provider 分组 + 可搜索模型列表）提取，新建/已有两场景共用，避免两套实现。数据源 `providerModelCatalog`（`/api/providers/<p>/models`，DB 优先）。
+- **新建对话**：`ProviderSelectionEmptyState` 内嵌该组件（它本就是这用途，cache 修复后即可正常显示并搜索全部模型）。
+- **已有对话入口**（新增，关键缺失）：在 `ChatComposer.tsx:358` 后的 `PromptInputTools` 区挂一个紧凑触发钮（显示当前 `provider · model`），点开同一个 `ToolModelSelector`。需把 `provider/setProvider`、各 model state、`providerModelCatalog`、`selectProviderModel`、`selectedSession` 从 `ChatInterface.tsx` 透传进 `ChatComposer`（目前未传）。
+- **三态接线**（§5.2）：选择器 `onSelect(provider, model)` —— 同 provider 换 model → resume + `explicitModel`（并 `selectProviderModel` 写 session override 持久化）；换 provider → fork 请求（`fork:true`+`sourceSessionId`+`sourceProvider`，清 sessionId）。**注意**：前端 `useChatComposerState.ts:717-799` 五个 send 分支目前**完全没有 fork 字段**，需在此补齐。
+- fork 提示与 in-flight 锁（§5.3、§8.6）；`session_created` 后切路由到新 id（§5.4）；侧栏 fork 徽章 + 回链（§5.5），summary 扩展 lineage 字段。
 
 **验证**
-- 端到端：换 tool → 看到 fork 提示 → 发送 → 路由切到新 session → 侧栏出现 fork 徽章 → 点徽章回到源 session。
+- 新建对话：能看到工具分组 + 每个工具下可搜索的模型列表（不再空白）。
+- 已有对话：composer 出现"工具·模型"入口；同工具换模型 → resume 用新模型；换工具 → fork 新 session。
+- 端到端 fork：换 tool → fork 提示 → 发送 → 路由切到新 session → 侧栏 fork 徽章 → 点徽章回源 session。
 - 纯 resume（未改 tool/model）走老路径，零行为变化。
 
 ---
@@ -447,6 +452,23 @@ User      Frontend            WS / forkSessionService     sessionsService.fetchH
 - 历史序列化：空历史、超长历史截断、tool_result 截断、保头保尾正确。
 - `markForked` / lineage 写入：写后 `getSessionById` 能读回三列。
 - 同步器不清 lineage：建一条 forked session，跑 `sessionSynchronizerService.synchronizeSessions()`（或针对性 upsert），断言 `forked_from` 仍在（参考既有 `sessions.db.integration.test.ts`）。
+
+---
+
+## 13. 实施进展（live）
+
+**阶段 1（已完成并上线）** commit `0322d8d`：
+- `provider_models` 表 + 启动 seed（164 模型 / 5 provider）+ models API DB 优先。
+- `explicitModel` 信号全链路；`resolveResumeModel(provider, sessionId, model, explicitModel)`。
+- cursor/gemini 经 `|| model` 兜底零回归（注：实测 `resolveResumeModel` 被全部 5 个 provider 调用，早期"仅 opencode"判断有误，已纠正）。
+
+**opencode 健壮性修复（已完成并上线）** commit `55ceda4`：
+- **脏模型自愈**：resume 时若会话存的模型无效/未认证（如脏数据 `anthropic/claude-sonnet-4-5`），自动用 opencode 有效默认（`opencode/big-pickle`，已验证 exit 0）**重试一次**，对标 opencode TUI 的回退恢复；只重试一次、无死循环。这修正了阶段 1「省略 --model → 用脏模型直接崩」的不足。
+- **错误如实透传**：读 `error.data.message`，不再吞成 "Unknown OpenCode error"（曾误显为"找不到对话"）。`opencode-sessions.provider.ts`。
+- **防卡死**：WS 兜底错误带 `kind:'error'` + 前端 legacy(no-kind) error 也清 loading（`useChatRealtimeHandlers.ts`），失败 turn 不再永久转圈。
+- **模型列表空白回归修复**：DB-first API 的 `cache:null` 不再被前端判为无效（`useChatProviderState.ts`）。
+
+**待办**：阶段 2（fork 后端 + lineage）、阶段 3（两级选择器 + fork UI，已并入用户 UI 反馈）。
 
 **手动验证**
 - Bug1：未认证默认模型环境下 opencode resume 续聊成功（核心验收）。
