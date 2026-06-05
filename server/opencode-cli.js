@@ -15,6 +15,23 @@ const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
 
 const activeOpenCodeProcesses = new Map();
 
+// cloudcli can itself be launched from inside an OpenCode run (e.g. started via
+// pm2 from an opencode session), which leaves OPENCODE_* markers in its
+// environment. The critical one is OPENCODE_SERVER_PASSWORD: when it is present,
+// a spawned `opencode run --session <id>` tries to resolve the session against
+// the *parent* OpenCode server instead of local storage and fails hard with
+// "Error: Session not found" (exit 1). Strip every OPENCODE_* var so our child
+// always runs as a clean, standalone CLI invocation.
+function buildOpenCodeChildEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('OPENCODE')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
 // Patterns that identify an OpenCode failure caused by an invalid or
 // unauthenticated model (a "dirty" session whose stored model points at a
 // provider/model the local machine cannot use). OpenCode's TUI silently falls
@@ -408,7 +425,7 @@ async function spawnOpenCode(command, options = {}, ws) {
       opencodeProcess = spawnFunction('opencode', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: buildOpenCodeChildEnv(),
       });
 
       activeOpenCodeProcesses.set(processKey, opencodeProcess);
