@@ -6,6 +6,17 @@
 
 ---
 
+## 0. 已拍板决策（项目负责人）
+
+1. **「换 model 不换 provider」不算 fork**：仍是同一 session 的 resume，只是带上用户新选的 model。只有「换 provider」才 fork。
+2. **历史超 token 上限时仅截断**：保头保尾 + 中间省略 + 工具输出截断，不引入摘要模型（无额外依赖/失败点）。
+3. **resume 时必须支持显式切换模型，且对所有 provider 生效（含 claude / codex）**。判定规则统一为 `explicitModel` 信号：
+   - 用户**没动**模型选择器（直接回复）→ `explicitModel=false` → **不传 model 覆盖**，用 session 自身模型（opencode 表现为不传 `--model`，修复 Bug1；claude/codex 保持各自现状，零回归）。
+   - 用户**主动改了**模型（如 haiku → Opus）→ `explicitModel=true` → **必须把新 model 传下去**，让该 provider 在 resume 时换用新模型。
+   - 因此「resume 换模型」是**两个动作之一**（另一个是「换工具→fork」），前端必须**明确区分**：换 provider=fork，仅换 model=resume+传新 model，都没动=resume 不传 model。详见 §4.1、§5.2。
+
+---
+
 ## 1. 背景与目标 / 非目标
 
 ### 1.1 背景
@@ -168,9 +179,20 @@ CREATE INDEX IF NOT EXISTS idx_provider_models_default
 - **opencode 省略 `--model`**：`server/opencode-cli.js:241-243` 已经是「`if (resolvedModel) args.push('--model', resolvedModel)`」，所以 `resolveResumeModel` 返回 `undefined` 时天然不传 `--model`，opencode 会用它 session 记录里的模型——正是期望行为，无需改 opencode-cli 这段分支逻辑本身。
 - **DB default 兜底**：仅当某 provider 在 resume 时**必须**带 model（claude SDK / codex 视实现而定）才回退 `provider_models.is_default`；opencode 走「省略」即可。
 
-**影响面控制（不要碰 cursor / gemini / codex 行为）**：
-- `resolveResumeModel` 目前**只有 opencode 调用**（`server/opencode-cli.js:236`）。claude（`claude-sdk.js`）与 codex（`openai-codex.js`）并不经过它（grep 确认：仅 opencode-cli 引用）。因此最小修复**只影响 opencode**，cursor/gemini/codex 零回归。
-- 若后续想让 codex/claude 也享受同样的「resume 不传坏默认」收益，可在其各自 resume 路径接入 `resolveResumeModel`，但**这属于可选增强，默认不做**，以保证本次零回归。
+**resume 显式换模型——必须对所有 provider 生效（决策 0.3）**：
+
+`resolveResumeModel` 目前**只有 opencode 调用**（`server/opencode-cli.js:236`）；claude（`claude-sdk.js`）与 codex（`openai-codex.js`）并不经过它（grep 确认）。但负责人要求「resume 时切模型（如 haiku→Opus，这是 **claude** 的场景）必须能用」，所以 claude / codex 的 resume 路径**也要接入** `explicitModel` 判定：
+
+| provider | `explicitModel=false`（用户没动模型） | `explicitModel=true`（用户主动改了模型） |
+|---|---|---|
+| **opencode** | `resolveResumeModel` 返回 `undefined` → 不传 `--model` → 用 session 自身模型（修复 Bug1） | 传用户选的 model 到 `--model` |
+| **claude** | 保持**现状**：仍按当前逻辑（前端传的 model / SDK 默认），**不改行为 → 零回归** | 把用户选的 model 作为 SDK resume 的 model 传下去（实现 haiku→Opus 切换） |
+| **codex** | 保持**现状**：不改行为 → 零回归 | 把用户选的 model 传给 `resumeThread` 的 threadOptions |
+
+落地要点：
+- **零回归底线**：只有当 `explicitModel===true` 时才改变 claude/codex 既有的 model 取值；`explicitModel!==true` 时三者都走「各自现状」（opencode=不传，claude/codex=原逻辑）。cursor/gemini 不在本次改动范围，保持不动。
+- **统一信号**：claude/codex 不强制都改走 `resolveResumeModel`，但**必须共享同一个 `explicitModel` 语义**——可在各自 spawn 入口加最小判断：`explicitModel ? useUserModel : keepCurrentBehavior`。opencode 走完整的 `resolveResumeModel(provider, sessionId, model, explicitModel)`。
+- **per-session override 仍最高优先**：若该 session 有 active-model override（`provider-session-active-model-changes.json`），无论 explicit 与否都先用它（保持现有语义）。「用户改了模型」这个动作本身也应写入该 override，使下一轮即便 `explicitModel=false` 也延续新模型（避免切到 Opus 后下一句又退回 haiku）。
 
 ### 4.2 Fork 路径：新的 WS 消息 / 字段设计
 
@@ -232,11 +254,18 @@ options: {
 - model 下拉数据源：优先 `provider_models`（经新 API，如 `GET /api/providers/<p>/models` 改为读 DB 表 + 回退目录），保证 default 与服务端一致。
 - **`explicitModel` 信号**：仅当用户**手动点开并改过** model 选择器时，发送 options 里带 `explicitModel: true`；纯预填不算显式（配合 §4.1 修复）。
 
-### 5.2 检测「tool 变了 → fork」
+### 5.2 三态判定：换工具(fork) / 仅换模型(resume+model) / 都没动(resume)
 
-- 计算 `isFork = Boolean(effectiveSessionId) && selectedTool !== selectedSession.provider`。
-- `isFork === false`：维持现状发送（resume 或全新对话），不带 fork 字段。
-- `isFork === true`：构造 fork 请求——**清空 sessionId**、`resume:false`，并带 `fork:true, sourceSessionId = selectedSession.id, sourceProvider = selectedSession.provider, model, explicitModel`。消息 type 用**目标 tool** 的 command（如从 opencode fork 到 codex 就发 `codex-command`）。
+打开一条已有 session 后，记下基线 `baseProvider = selectedSession.provider`、`baseModel = 该 session 当前 model`。发送时按下表三选一（决策 0.1 / 0.3）：
+
+| 条件 | 动作 | 请求构造 |
+|---|---|---|
+| `selectedTool !== baseProvider` | **fork** | 清空 sessionId、`resume:false`、`fork:true` + `sourceSessionId/sourceProvider`，消息 type 用**目标 tool** 的 command。model 用目标 provider 的选择值（空则 `provider_models.is_default`）。 |
+| 同 provider 且 `selectedModel !== baseModel` | **resume + 显式换模型** | 带 `sessionId`、`resume:true`、`model = selectedModel`、**`explicitModel:true`**。type 仍是原 provider command。 |
+| 同 provider 且模型未变 | **纯 resume** | 带 `sessionId`、`resume:true`、**`explicitModel:false`**（model 字段可带可不带，后端因 `explicitModel:false` 会忽略它用 session 自身模型）。 |
+
+- **`explicitModel` 的唯一真相**：是否等于「用户本次相对基线**真的改过** model 选择器」。仅仅因为预填把 model 填进了选择器**不算** explicit（否则每次都误判成换模型）。实现上用 `selectedModel !== baseModel` 判定，而不是「选择器有值」。
+- **换模型要持久**：当判定为「resume + 显式换模型」时，前端除了本轮带 `explicitModel:true`，后端还应把新 model 写进该 session 的 active-model override（见 §4.1 末），使下一轮即使 `explicitModel:false` 也延续新模型，`baseModel` 同步更新为新值。
 
 ### 5.3 发送按钮 fork 提示
 
@@ -372,12 +401,14 @@ User      Frontend            WS / forkSessionService     sessionsService.fetchH
 
 **交付物**
 - `provider_models` 表 + 迁移（§3.3），seed 流程（从 `getProviderModels` 灌入）。
-- `resolveResumeModel` 改造 + `explicitModel` 透传（§4.1），opencode resume 不再传坏默认。
+- `explicitModel` 信号端到端透传 + 三 provider 接入（§4.1 表）：opencode 走 `resolveResumeModel(..., explicitModel)`（false→不传 `--model`，修复 Bug1）；claude/codex 在各自 resume 路径加最小判断（false→现状零回归，true→传用户选的 model，实现 haiku→Opus 切换）。
+- 「用户改模型」写入 per-session active-model override，使新模型在后续轮次延续（§4.1 末）。
 - `GET /api/providers/<p>/models` 数据源改为「DB 表优先，目录回退」。
 
 **验证**
-- 在本机**未认证** `anthropic/claude-sonnet-4-5` 的环境下，resume 一条 opencode session 不再 exit 1、能正常续聊。
-- cursor / gemini / codex resume 行为无任何变化（回归测试）。
+- Bug1：本机**未认证** `anthropic/claude-sonnet-4-5` 时，resume 一条 opencode session（不动模型）不再 exit 1、正常续聊。
+- 显式换模型：claude session 把模型从 haiku 改成 Opus 后 resume，确实换用 Opus；下一轮不动模型仍保持 Opus（override 生效）。
+- 零回归：cursor / gemini 行为不变；claude / codex 在「未显式改模型」时行为与改造前一致。
 
 ### 阶段 2：fork 后端 + lineage
 
@@ -409,7 +440,9 @@ User      Frontend            WS / forkSessionService     sessionsService.fetchH
 ## 10. 测试计划
 
 **单元测试**
-- `resolveResumeModel`：覆盖 (a) 有 per-session override、(b) `explicitModel:true`、(c) resume 无 override 且 `explicitModel:false` → 返回 `undefined`、(d) 无 sessionId（新对话）→ 用 requestedModel。
+- `resolveResumeModel`：覆盖 (a) 有 per-session override、(b) `explicitModel:true` → 用用户选的 model、(c) resume 无 override 且 `explicitModel:false` → 返回 `undefined`（opencode 不传 `--model`）、(d) 无 sessionId（新对话）→ 用 requestedModel。
+- claude/codex 显式换模型：`explicitModel:true` 时 resume 用新 model（haiku→Opus）；`explicitModel:false` 时取值与改造前一致（零回归对照）。
+- 换模型持久化：显式换模型后写入 active-model override，下一轮 `explicitModel:false` 仍解析到新 model。
 - `provider_models` repo：upsert 幂等、`is_default` 唯一性（置新 default 会清旧）、`is_available=0` 软下线。
 - 历史序列化：空历史、超长历史截断、tool_result 截断、保头保尾正确。
 - `markForked` / lineage 写入：写后 `getSessionById` 能读回三列。
