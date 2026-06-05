@@ -6,6 +6,22 @@
 
 ---
 
+## 状态与下一步（START HERE — 续作从这里看）
+
+**已完成并上线**（main）：
+- 阶段 1：`provider_models` 表 + seed + models API DB 优先；`explicitModel` 信号全链路；Bug1 模型解析（commit `0322d8d`）。
+- opencode 健壮性：脏模型自愈重试、错误如实透传、防卡死、模型列表空白回归修复（commit `55ceda4`）。
+- 前端崩溃修复：id-less realtime 消息合并守卫（commit `951af67`）。
+- 详见 §13。
+
+**下一步（待实施，两块，建议一起做）**：
+- **阶段 2 — fork 后端 + lineage**：`sessions` 表加 `forked_from/forked_from_provider/forked_at`（§3.2）；`forkSessionService`：`fetchHistory`→序列化（§6）→无 sessionId spawn 目标工具→捕获新 id→`createSession`+`markForked`（§4.2、§7b 时序图）；WS options 加 `fork/sourceSessionId/sourceProvider`；同步器不清 lineage（§3.2/§8.4）。
+- **阶段 3 — 两级选择器（工具+模型）+ fork UI**：抽可复用 `ToolModelSelector`（从 `ProviderSelectionEmptyState.tsx` 提取）；新建对话内嵌；**已有对话**在 `ChatComposer.tsx:358` 后补入口（当前完全没有）；三态接线（同 provider 换 model=resume+explicitModel，换 provider=fork）；fork 徽章+回链。完整细节见 §5、§9 阶段 3。
+
+**关键不变量（别破坏）**：sessionId 由工具生成、不可预先指定→fork 必须「先 spawn 拿新 id 再写 lineage」（§7b）；lineage 三列绝不进任何 upsert 的 `DO UPDATE SET`（§3.2）；resume 未显式改 model 时各 provider 零回归（§4.1 表）。
+
+---
+
 ## 0. 已拍板决策（项目负责人）
 
 1. **「换 model 不换 provider」不算 fork**：仍是同一 session 的 resume，只是带上用户新选的 model。只有「换 provider」才 fork。
