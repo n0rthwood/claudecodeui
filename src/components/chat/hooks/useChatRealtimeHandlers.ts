@@ -130,6 +130,21 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        case 'error': {
+          // Legacy error message with no `kind` (e.g. WebSocket-layer catch
+          // fallback). Without this branch it would fall through to default and
+          // be silently ignored, leaving the UI stuck in a loading spinner.
+          // This is a double safety net alongside the backend now sending
+          // `kind: 'error'` on these fallbacks.
+          setIsLoading(false);
+          setCanAbortSession(false);
+          setClaudeStatus(null);
+          onSessionInactive?.(activeViewSessionId);
+          onSessionNotProcessing?.(activeViewSessionId);
+          pendingViewSessionRef.current = null;
+          return;
+        }
+
         case 'session-status': {
           const statusSessionId = msg.sessionId;
           if (!statusSessionId) return;

@@ -180,7 +180,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
           const queryString = params.toString();
           const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
           const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models || !body.data?.cache) {
+          if (!body.success || !body.data?.models) {
             return null;
           }
 
@@ -202,7 +202,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
         }
 
         nextCatalog[p] = entry.models;
-        nextCacheCatalog[p] = entry.cache;
+        nextCacheCatalog[p] = entry.cache ?? undefined;
       });
 
       setProviderModelCatalog(nextCatalog);

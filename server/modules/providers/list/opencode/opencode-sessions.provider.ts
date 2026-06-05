@@ -294,13 +294,27 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'error') {
+      // OpenCode error events are shaped like
+      //   { type: 'error', error: { name, data: { message } } }
+      // so `raw.error` is typically an object, not a string. Read the nested
+      // message first (most specific real error), then fall back progressively.
+      const errorRecord = readObjectRecord(raw.error);
+      const errorData = errorRecord ? readObjectRecord(errorRecord.data) : null;
+      const content =
+        readOptionalString(raw.error)
+        ?? (errorData ? readOptionalString(errorData.message) : undefined)
+        ?? (errorRecord ? readOptionalString(errorRecord.message) : undefined)
+        ?? (errorRecord ? readOptionalString(errorRecord.name) : undefined)
+        ?? readOptionalString(raw.message)
+        ?? 'Unknown OpenCode error';
+
       return [createNormalizedMessage({
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
         provider: PROVIDER,
         kind: 'error',
-        content: readOptionalString(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
+        content,
       })];
     }
 

@@ -273,7 +273,12 @@ export function handleChatConnection(
       console.error('[ERROR] Chat WebSocket error:', message);
       writer.send({
         type: 'error',
+        // Include `kind` so the frontend routes this through the normalized
+        // error handler (which clears the loading state) instead of silently
+        // dropping it as an unknown legacy message and leaving the UI spinning.
+        kind: 'error',
         error: message,
+        content: message,
       });
     }
   });
