@@ -13,7 +13,7 @@ import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
-import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
+import { closeSessionsWatcher, initializeSessionsWatcher, seedProviderModels } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -1569,6 +1569,12 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+
+        // Seed the provider_models catalog asynchronously. Failures must not block
+        // startup, so this is fire-and-forget with its own error handling.
+        void seedProviderModels().catch((error) => {
+            console.warn('Provider models seed failed:', error);
+        });
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

@@ -517,10 +517,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
   };
 
   try {
+    // explicitModel===true → user picked a model this turn (haiku→Opus); resolve
+    // forces it (and persists the override). Otherwise resolveResumeModel returns
+    // undefined on resume, so `resolvedModel || options.model` keeps claude's
+    // existing model selection (zero regression).
     const resolvedModel = await providerModelsService.resolveResumeModel(
       'claude',
       sessionId,
       options.model,
+      options.explicitModel,
     );
 
     // Map CLI options to SDK format

@@ -3,3 +3,5 @@ export { providerSkillsService } from './services/skills.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+export { seedProviderModels } from './services/provider-models-seed.service.js';

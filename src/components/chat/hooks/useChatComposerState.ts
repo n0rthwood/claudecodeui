@@ -161,6 +161,18 @@ const getNotificationSessionSummary = (
   return normalizedFallback.length > 80 ? `${normalizedFallback.slice(0, 77)}...` : normalizedFallback;
 };
 
+/** Returns the currently-selected model value for a given provider. */
+function getModelForProvider(
+  p: LLMProvider,
+  models: { cursorModel: string; claudeModel: string; codexModel: string; geminiModel: string; opencodeModel: string },
+): string {
+  if (p === 'cursor') return models.cursorModel;
+  if (p === 'codex') return models.codexModel;
+  if (p === 'gemini') return models.geminiModel;
+  if (p === 'opencode') return models.opencodeModel;
+  return models.claudeModel;
+}
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -192,6 +204,12 @@ export function useChatComposerState({
   setIsUserScrolledUp,
   setPendingPermissionRequests,
 }: UseChatComposerStateArgs) {
+  // baseModelRef tracks the model that was in effect when the current session
+  // was last selected (or after the user explicitly changed it and sent).
+  // Used to detect whether the user has *explicitly* changed the model vs the
+  // model selector simply being pre-filled by switching to a session.
+  const baseModelRef = useRef<string | null>(null);
+
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       // Draft inputs are keyed by the DB projectId so per-project drafts
@@ -214,6 +232,22 @@ export function useChatComposerState({
   >(null);
   const inputValueRef = useRef(input);
   const selectedProjectId = selectedProject?.projectId;
+
+  // Reset the baseline model whenever the active session changes.
+  // Pre-filling the model selector when switching sessions must NOT count as
+  // an explicit user action, so we capture the current model value as the new
+  // baseline immediately after the session switch.
+  const selectedSessionId = selectedSession?.id ?? null;
+  useEffect(() => {
+    baseModelRef.current = getModelForProvider(provider, {
+      cursorModel,
+      claudeModel,
+      codexModel,
+      geminiModel,
+      opencodeModel,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSessionId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -663,6 +697,23 @@ export function useChatComposerState({
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
+      // Compute explicitModel: true only when the user is resuming an existing
+      // session AND the currently-selected model differs from the baseline that
+      // was captured when this session was last activated.  A fresh session
+      // (no effectiveSessionId) never needs the flag — the backend treats the
+      // request as a new conversation and always uses the supplied model.
+      const currentModel = getModelForProvider(provider, {
+        cursorModel,
+        claudeModel,
+        codexModel,
+        geminiModel,
+        opencodeModel,
+      });
+      const explicitModel: boolean =
+        Boolean(effectiveSessionId) &&
+        baseModelRef.current !== null &&
+        currentModel !== baseModelRef.current;
+
       if (provider === 'cursor') {
         sendMessage({
           type: 'cursor-command',
@@ -674,6 +725,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: cursorModel,
+            explicitModel,
             skipPermissions: toolsSettings?.skipPermissions || false,
             sessionSummary,
             toolsSettings,
@@ -690,6 +742,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: codexModel,
+            explicitModel,
             sessionSummary,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
           },
@@ -705,6 +758,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: geminiModel,
+            explicitModel,
             sessionSummary,
             permissionMode,
             toolsSettings,
@@ -721,6 +775,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: opencodeModel,
+            explicitModel,
             sessionSummary,
           },
         });
@@ -736,10 +791,18 @@ export function useChatComposerState({
             toolsSettings,
             permissionMode,
             model: claudeModel,
+            explicitModel,
             sessionSummary,
             images: uploadedImages,
           },
         });
+      }
+
+      // When the user explicitly changed the model and just sent, advance the
+      // baseline so that the *next* turn without a further model change is
+      // correctly treated as "not explicit".
+      if (explicitModel) {
+        baseModelRef.current = currentModel;
       }
 
       setInput('');

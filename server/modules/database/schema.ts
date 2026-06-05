@@ -96,6 +96,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+export const PROVIDER_MODELS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS provider_models (
+    provider TEXT NOT NULL,
+    model_value TEXT NOT NULL,
+    model_label TEXT NOT NULL,
+    model_description TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    is_available INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (provider, model_value)
+);
+`;
+
 export const LAST_SCANNED_AT_SQL = `
 CREATE TABLE IF NOT EXISTS scan_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -146,6 +160,9 @@ ${SESSIONS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 -- NOTE: This index is created in migrations after sessions is rebuilt to include project_path.
 -- Creating it here can fail on upgraded installs where the legacy sessions table has no project_path.
+
+${PROVIDER_MODELS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_provider_models_default ON provider_models(provider, is_default);
 
 ${LAST_SCANNED_AT_SQL}
 

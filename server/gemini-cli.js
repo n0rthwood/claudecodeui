@@ -121,11 +121,14 @@ async function buildGeminiProcessEnv() {
 
 async function spawnGemini(command, options = {}, ws) {
     const { sessionId, projectPath, cwd, toolsSettings, permissionMode, images, sessionSummary } = options;
-    const resolvedModel = await providerModelsService.resolveResumeModel(
+    // resolveResumeModel now returns undefined on resume when the model wasn't
+    // explicitly changed; gemini is out of scope for the explicit-model feature,
+    // so fall back to the request's model to preserve its prior behavior exactly.
+    const resolvedModel = (await providerModelsService.resolveResumeModel(
         'gemini',
         sessionId,
         options.model
-    );
+    )) || options.model;
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let assistantBlocks = []; // Accumulate the full response blocks including tools

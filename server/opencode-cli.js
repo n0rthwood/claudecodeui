@@ -124,7 +124,7 @@ function readOpenCodeSessionDirectory(sessionId) {
 
 async function spawnOpenCode(command, options = {}, ws) {
   return new Promise((resolve, reject) => {
-    const { sessionId, projectPath, cwd, model, sessionSummary } = options;
+    const { sessionId, projectPath, cwd, model, explicitModel, sessionSummary } = options;
     // When resuming an existing session, the directory it was created in is the
     // only cwd OpenCode will accept; prefer it over the (possibly stale) cwd the
     // client sent so deep-linked resumes don't fail with "Session not found".
@@ -233,7 +233,7 @@ async function spawnOpenCode(command, options = {}, ws) {
       }
     };
 
-    void providerModelsService.resolveResumeModel('opencode', sessionId, model).then((resolvedModel) => {
+    void providerModelsService.resolveResumeModel('opencode', sessionId, model, explicitModel).then((resolvedModel) => {
       const args = ['run', '--format', 'json'];
       if (sessionId) {
         args.push('--session', sessionId);
@@ -270,6 +270,14 @@ async function spawnOpenCode(command, options = {}, ws) {
         if (!stderrText.trim()) {
           return;
         }
+
+        // Surface OpenCode errors in pm2 logs (design §4.3) so operators can
+        // diagnose failures without relying on the frontend.
+        console.error(
+          '[OpenCode] stderr session=%s stderr=%s',
+          capturedSessionId || sessionId || processKey,
+          stderrText.trim(),
+        );
 
         ws.send(createNormalizedMessage({
           kind: 'error',
@@ -313,6 +321,13 @@ async function spawnOpenCode(command, options = {}, ws) {
           resolve();
           return;
         }
+
+        // Non-zero exit: log to pm2 (design §4.3) for post-mortem debugging.
+        console.error(
+          '[OpenCode] exit=%s session=%s',
+          code,
+          finalSessionId,
+        );
 
         if (code === 127 || code === null) {
           const installed = await providerAuthService.isProviderInstalled('opencode');

@@ -228,14 +228,21 @@ export async function queryCodex(command, options = {}, ws) {
     cwd,
     projectPath,
     model,
+    explicitModel,
     permissionMode = 'default'
   } = options;
 
-  const resolvedModel = await providerModelsService.resolveResumeModel(
+  // explicitModel===true → user picked a model this turn (haiku→Opus); resolve
+  // forces it (and persists the override). Otherwise resolveResumeModel returns
+  // undefined on resume, so we fall back to the request's model to keep codex's
+  // existing behavior (zero regression).
+  const resolvedResumeModel = await providerModelsService.resolveResumeModel(
     'codex',
     sessionId,
     model,
+    explicitModel,
   );
+  const resolvedModel = resolvedResumeModel || model;
 
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);

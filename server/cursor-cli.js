@@ -29,7 +29,10 @@ function isWorkspaceTrustPrompt(text = '') {
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
     const { sessionId, projectPath, cwd, resume, toolsSettings, skipPermissions, model, sessionSummary } = options;
-    const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
+    // resolveResumeModel now returns undefined on resume when the model wasn't
+    // explicitly changed; cursor is out of scope for the explicit-model feature,
+    // so fall back to the request's model to preserve its prior behavior exactly.
+    const resolvedModel = (await providerModelsService.resolveResumeModel('cursor', sessionId, model)) || model;
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let hasRetriedWithTrust = false;

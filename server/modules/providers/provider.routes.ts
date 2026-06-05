@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 
+import { providerModelsDb } from '@/modules/database/index.js';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
@@ -11,6 +12,7 @@ import type {
   McpScope,
   McpTransport,
   ProviderChangeActiveModelInput,
+  ProviderModelsDefinition,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
@@ -284,11 +286,48 @@ router.get(
   }),
 );
 
+/**
+ * Build a ProviderModelsDefinition from the authoritative `provider_models` DB
+ * table. Returns null when the table has no usable rows for the provider so the
+ * caller can fall back to the upstream catalog. Only available rows are surfaced
+ * as selectable options; the default is taken from the table's is_default flag.
+ */
+const buildModelsDefinitionFromDb = (provider: LLMProvider): ProviderModelsDefinition | null => {
+  const rows = providerModelsDb.listByProvider(provider).filter((row) => row.is_available === 1);
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const OPTIONS = rows.map((row) => ({
+    value: row.model_value,
+    label: row.model_label,
+    ...(row.model_description ? { description: row.model_description } : {}),
+  }));
+
+  const defaultRow = providerModelsDb.getDefault(provider);
+  const DEFAULT = defaultRow && defaultRow.is_available === 1
+    ? defaultRow.model_value
+    : OPTIONS[0].value;
+
+  return { OPTIONS, DEFAULT };
+};
+
 router.get(
   '/:provider/models',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const bypassCache = parseOptionalBooleanQuery(req.query.bypassCache, 'bypassCache') ?? false;
+
+    // DB table is the authoritative source. Fall back to the upstream catalog
+    // (provider-models cache/fresh fetch) only when the table has no rows yet.
+    if (!bypassCache) {
+      const dbModels = buildModelsDefinitionFromDb(provider);
+      if (dbModels) {
+        res.json(createApiSuccessResponse({ provider, models: dbModels, cache: null }));
+        return;
+      }
+    }
+
     const result = await providerModelsService.getProviderModels(provider, { bypassCache });
     res.json(createApiSuccessResponse({ provider, models: result.models, cache: result.cache }));
   }),

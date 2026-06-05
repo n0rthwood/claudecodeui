@@ -287,10 +287,27 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     filePath: activeModelChangesPath,
   });
 
+  /**
+   * Resolve which model (if any) should be forced on a resume/start turn.
+   *
+   * Priority (see design §4.1):
+   * 1) per-session active-model override (the user explicitly changed the model
+   *    on this session at some earlier point) → use it (highest priority).
+   * 2) no sessionId (a brand-new conversation) → use requestedModel (a new
+   *    conversation must carry a model).
+   * 3) resume of an existing session:
+   *    - explicitModel === true → the user just picked a model this turn → use
+   *      requestedModel, and persist it as the session's active-model override so
+   *      subsequent turns (explicitModel:false) keep the new model.
+   *    - explicitModel !== true → return undefined so the caller omits the model
+   *      and the provider keeps the session's own model (fixes Bug1 for opencode;
+   *      claude/codex fall back to their existing behavior at their call sites).
+   */
   const resolveResumeModel = async (
     provider: LLMProvider,
     sessionId: string | undefined,
     requestedModel?: string | null,
+    explicitModel?: boolean,
   ): Promise<string | undefined> => {
     const normalizedRequestedModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
     if (!sessionId?.trim()) {
@@ -302,7 +319,21 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       return changedModel.model.trim();
     }
 
-    return normalizedRequestedModel || undefined;
+    if (explicitModel === true && normalizedRequestedModel) {
+      // The user changed the model this turn: persist it so the change survives
+      // into later turns where explicitModel is false.
+      try {
+        await changeActiveModel(provider, {
+          sessionId: sessionId.trim(),
+          model: normalizedRequestedModel,
+        });
+      } catch (error) {
+        console.warn('Unable to persist active-model override:', error);
+      }
+      return normalizedRequestedModel;
+    }
+
+    return undefined;
   };
 
   const clearCache = (): void => {
