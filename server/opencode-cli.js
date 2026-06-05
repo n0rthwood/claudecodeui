@@ -391,6 +391,20 @@ async function spawnOpenCode(command, options = {}, ws) {
         args.push(command.trim());
       }
 
+      // Diagnostic: log exactly how we invoke OpenCode so an intermittent
+      // "Session not found" / empty-output resume can be pinpointed from pm2
+      // logs (session id, resolved cwd, whether resumeDir was used, model,
+      // and whether this is the self-heal retry).
+      console.log(
+        '[OpenCode] spawn session=%s retry=%s cwd=%s resumeDir=%s clientCwd=%s model=%s',
+        sessionId || '(new)',
+        hasRetriedWithFallbackModel,
+        workingDir,
+        resumeDir || '(null)',
+        cwd || '(none)',
+        resolvedModel || '(session-default)',
+      );
+
       opencodeProcess = spawnFunction('opencode', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
