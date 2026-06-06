@@ -89,6 +89,16 @@ function ChatInterface({
     selectedProject,
   });
 
+  // Track base provider for fork detection: the session's original provider.
+  const baseProviderRef = useRef<LLMProvider>(provider);
+  const selectedSessionId_forRef = selectedSession?.id ?? null;
+  useEffect(() => {
+    if (selectedSession?.__provider) {
+      baseProviderRef.current = selectedSession.__provider as LLMProvider;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSessionId_forRef]);
+
   const {
     chatMessages,
     addMessage,
@@ -184,6 +194,7 @@ function ChatInterface({
     selectedProject,
     selectedSession,
     currentSessionId,
+    setCurrentSessionId,
     provider,
     permissionMode,
     cyclePermissionMode,
@@ -211,6 +222,39 @@ function ChatInterface({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
   });
+
+  // Current model for the active provider (used by ToolModelSelector).
+  const currentModel =
+    provider === 'cursor' ? cursorModel
+    : provider === 'codex' ? codexModel
+    : provider === 'gemini' ? geminiModel
+    : provider === 'opencode' ? opencodeModel
+    : claudeModel;
+
+  // Handle tool/model selection from the ToolModelSelector in the composer.
+  const handleToolModelSelect = useCallback(
+    (newProvider: LLMProvider, newModel: string) => {
+      setProvider(newProvider as Provider);
+      localStorage.setItem('selected-provider', newProvider);
+      if (newProvider === 'claude') {
+        setClaudeModel(newModel);
+        localStorage.setItem('claude-model', newModel);
+      } else if (newProvider === 'codex') {
+        setCodexModel(newModel);
+        localStorage.setItem('codex-model', newModel);
+      } else if (newProvider === 'gemini') {
+        setGeminiModel(newModel);
+        localStorage.setItem('gemini-model', newModel);
+      } else if (newProvider === 'opencode') {
+        setOpenCodeModel(newModel);
+        localStorage.setItem('opencode-model', newModel);
+      } else {
+        setCursorModel(newModel);
+        localStorage.setItem('cursor-model', newModel);
+      }
+    },
+    [setProvider, setClaudeModel, setCodexModel, setGeminiModel, setOpenCodeModel, setCursorModel],
+  );
 
   // On WebSocket reconnect, re-fetch the current session's messages from the server
   // so missed streaming events are shown. Also reset isLoading.
@@ -427,6 +471,12 @@ function ChatInterface({
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
+          selectedSession={selectedSession}
+          providerModelCatalog={providerModelCatalog}
+          providerModelsLoading={providerModelsLoading}
+          onToolModelSelect={handleToolModelSelect}
+          baseProvider={baseProviderRef.current}
+          currentModel={currentModel}
         />
       </div>
 

@@ -14,9 +14,12 @@
 - 前端崩溃修复：id-less realtime 消息合并守卫（commit `951af67`）。
 - 详见 §13。
 
-**下一步（待实施，两块，建议一起做）**：
-- **阶段 2 — fork 后端 + lineage**：`sessions` 表加 `forked_from/forked_from_provider/forked_at`（§3.2）；`forkSessionService`：`fetchHistory`→序列化（§6）→无 sessionId spawn 目标工具→捕获新 id→`createSession`+`markForked`（§4.2、§7b 时序图）；WS options 加 `fork/sourceSessionId/sourceProvider`；同步器不清 lineage（§3.2/§8.4）。
-- **阶段 3 — 两级选择器（工具+模型）+ fork UI**：抽可复用 `ToolModelSelector`（从 `ProviderSelectionEmptyState.tsx` 提取）；新建对话内嵌；**已有对话**在 `ChatComposer.tsx:358` 后补入口（当前完全没有）；三态接线（同 provider 换 model=resume+explicitModel，换 provider=fork）；fork 徽章+回链。完整细节见 §5、§9 阶段 3。
+**阶段 2 + 3 已实现（working tree，待编译部署 + 提交）**：见 §13「阶段 2/3」。
+
+**下一步**：
+- 在本机/各部署主机 `npm run build` + nohup 分离 `pm2 restart cloudcli`（§11）。
+- 手动验收三向 fork（opencode→codex / codex→claude / claude→opencode）、徽章回链、纯 resume 零回归（§9 阶段 3 验证）。
+- 提交并推送。
 
 **关键不变量（别破坏）**：sessionId 由工具生成、不可预先指定→fork 必须「先 spawn 拿新 id 再写 lineage」（§7b）；lineage 三列绝不进任何 upsert 的 `DO UPDATE SET`（§3.2）；resume 未显式改 model 时各 provider 零回归（§4.1 表）。
 
@@ -484,7 +487,24 @@ User      Frontend            WS / forkSessionService     sessionsService.fetchH
 - **防卡死**：WS 兜底错误带 `kind:'error'` + 前端 legacy(no-kind) error 也清 loading（`useChatRealtimeHandlers.ts`），失败 turn 不再永久转圈。
 - **模型列表空白回归修复**：DB-first API 的 `cache:null` 不再被前端判为无效（`useChatProviderState.ts`）。
 
-**待办**：阶段 2（fork 后端 + lineage）、阶段 3（两级选择器 + fork UI，已并入用户 UI 反馈）。
+**阶段 2（fork 后端 + lineage，已实现于 working tree）**：
+- `sessions` 三列 `forked_from/forked_from_provider/forked_at`：`schema.ts`、`migrations.ts`（rebuild 列定义 + 搬迁 SELECT/INSERT 带 NULL 兜底 + `runMigrations` 幂等 ADD COLUMN + `idx_sessions_forked_from`）、`sessions.db.ts`（全部 SELECT 带三列 + 新增 `markForked`）。
+- `fork-session.service.ts`（新）：`serializeHistory`（保头 5 / 保尾 15 turn、tool_result 截断 2k、总量上限 80k）、`buildForkHistoryPrompt`、`ForkWriter`（拦截 `setSessionId` 拿新 id）、`createForkWriter`。
+- **关键修正**：DB session 行由后台同步器懒创建，fork 首轮 `setSessionId` 时该行尚不存在，裸 `markForked` 会 UPDATE 0 行丢 lineage → `createForkWriter` 改为先 `createSession(newId, targetProvider, projectPath)` 再 `markForked`（幂等 upsert，同步器 re-upsert 不碰 lineage 列）。
+- `chat-websocket.service.ts`：抽 `prepareForkSpawn(opts, command, targetProvider)` 共享 helper，4 个 `*-command`（claude/codex/gemini/opencode）`fork===true` 时走 fork 预处理；非 fork 走原路径零变化。
+- `projects-with-sessions-fetch.service.ts`：`SessionSummary` + `mapSessionRowToSummary` 带 `forkedFrom/forkedFromProvider/forkedAt`，经 `project.sessions` 透传前端。
+- lineage 不变量已核：所有同步器走 `sessionsDb.createSession`，其 `ON CONFLICT DO UPDATE SET` 不含 lineage 三列。
+
+**阶段 3（两级选择器 + fork UI，已实现于 working tree）**：
+- `ToolModelSelector.tsx`（新）：紧凑触发钮显示 `provider · model`，换 provider 时橙色 fork 提示徽章；可搜索的 provider 分组模型列表。
+- `ChatComposer.tsx`：`ThinkingModeSelector` 后挂 `ToolModelSelector`（仅 `selectedSession` 存在时；`disabled={isLoading}`）；新增 6 个透传 props。
+- `ChatInterface.tsx`：`baseProviderRef`（按 session id 同步源 provider）、`currentModel`、`handleToolModelSelect`（setProvider + 写各 model state/localStorage）、透传 props + `setCurrentSessionId` 进 composer hook。
+- `useChatProviderState.ts`：**关键修正** provider-sync effect 改为「仅 session id 变化时同步」（原 `[provider, selectedSession]` 每次 provider 变都回灌，会把用户的工具切换瞬间撤销，fork UI 无法工作）。
+- `useChatComposerState.ts`：新增 `setCurrentSessionId` 参数 + `forkInFlightRef`（防连点双 fork，session 变更时重置）；`handleSubmit` 在 provider 发送链前插入 fork 三态分支：`provider !== selectedSession.__provider` → 清 sessionId + `fork:true/sourceSessionId/sourceProvider` + `explicitModel:true` 发 `${provider}-command`，early return。
+- `SidebarSessionItem.tsx`：`forkedFrom` 非空渲染橙色 GitBranch「fork」徽章（mobile + desktop，title 显示源 provider）。
+- 已通过 `npm run build`（client vite + server tsc）零类型错误；`serializeHistory` 已 node 冒烟测试。
+
+**待办**：编译部署（§11 nohup 重启）、三向 fork 手动验收、提交推送。
 
 **手动验证**
 - Bug1：未认证默认模型环境下 opencode resume 续聊成功（核心验收）。

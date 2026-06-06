@@ -241,6 +241,8 @@ async function spawnOpenCode(command, options = {}, ws) {
     // Whether we've already self-healed this turn by retrying with a fallback
     // model. Lives across spawns so we retry at most once (no infinite loop).
     let hasRetriedWithFallbackModel = false;
+    // Whether we've already restarted as a fresh session after "Session not found".
+    let hasRetriedAsNewSession = false;
     // Per-run state, reset by runOpenCodeProcess on each (re)spawn.
     let stdoutLineBuffer = '';
     // True once this run emitted an error event whose message explicitly names a
@@ -256,6 +258,10 @@ async function spawnOpenCode(command, options = {}, ws) {
     // When set, suppress this run's transient error/complete output because a
     // self-heal retry is in flight (the user only sees the recovered result).
     let suppressTerminalOutput = false;
+    // True when stderr contained "Session not found" — triggers a silent
+    // fresh-session retry (spawning without --session) instead of showing
+    // a dead-end error to the user.
+    let runSawSessionNotFound = false;
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -302,7 +308,9 @@ async function spawnOpenCode(command, options = {}, ws) {
         ws.setSessionId(capturedSessionId);
       }
 
-      if (!sessionId && !sessionCreatedSent) {
+      // Emit session_created for genuinely new sessions AND for the silent
+      // fresh-session retry that recovers from a "Session not found" failure.
+      if ((!sessionId || hasRetriedAsNewSession) && !sessionCreatedSent) {
         sessionCreatedSent = true;
         ws.send(createNormalizedMessage({
           kind: 'session_created',
@@ -387,8 +395,11 @@ async function spawnOpenCode(command, options = {}, ws) {
     // Spawn (or re-spawn) `opencode run`. Re-invoked once with an explicit
     // fallback model when the first attempt fails because the session's stored
     // model is invalid/unauthenticated — the same self-heal OpenCode's TUI does.
+    // When skipSessionArg=true, omit --session to create a fresh session (used
+    // to recover from genuine "Session not found" after the session's data is
+    // missing from local opencode storage).
     let currentRunModel = null;
-    const runOpenCodeProcess = (resolvedModel) => {
+    const runOpenCodeProcess = (resolvedModel, skipSessionArg = false) => {
       // Reset per-run state so a retry starts clean.
       currentRunModel = resolvedModel || null;
       stdoutLineBuffer = '';
@@ -396,9 +407,10 @@ async function spawnOpenCode(command, options = {}, ws) {
       runSawModelErrorText = false;
       runSawAssistantOutput = false;
       suppressTerminalOutput = false;
+      runSawSessionNotFound = false;
 
       const args = ['run', '--format', 'json'];
-      if (sessionId) {
+      if (sessionId && !skipSessionArg) {
         args.push('--session', sessionId);
       }
       if (resolvedModel) {
@@ -456,6 +468,15 @@ async function spawnOpenCode(command, options = {}, ws) {
           stderrText.trim(),
         );
 
+        // "Session not found" means the session was created in a different
+        // opencode context (e.g. before OPENCODE_* env stripping was applied)
+        // and no longer exists locally. Suppress the error; we'll silently
+        // restart as a fresh session in the close handler.
+        if (/session not found/i.test(stderrText) && sessionId && !hasRetriedAsNewSession) {
+          runSawSessionNotFound = true;
+          return;
+        }
+
         // A dirty-model failure can also surface on stderr; flag it and, when a
         // self-heal retry is still possible, suppress the transient error so the
         // user only sees the recovered (or, if recovery fails, the final) result.
@@ -487,6 +508,23 @@ async function spawnOpenCode(command, options = {}, ws) {
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
           stdoutLineBuffer = '';
+        }
+
+        // Session not found: the opencode session ID exists in cloudcli's DB but
+        // not in opencode's local storage (e.g. it was created before the
+        // OPENCODE_* env stripping fix was deployed, so it ended up on a remote
+        // opencode server). There is nothing to resume — silently start a fresh
+        // session so the user can continue without a dead-end error screen.
+        if (code !== 0 && runSawSessionNotFound && sessionId && !hasRetriedAsNewSession) {
+          hasRetriedAsNewSession = true;
+          const freshModel = currentRunModel || resolveOpenCodeFallbackModel();
+          console.log(
+            '[OpenCode] session=%s not found in local storage; auto-restarting as fresh session model=%s',
+            sessionId,
+            freshModel || '(session-default)',
+          );
+          runOpenCodeProcess(freshModel, true);
+          return;
         }
 
         // Self-heal: the run failed because the session's stored model is

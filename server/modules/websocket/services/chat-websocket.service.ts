@@ -2,6 +2,7 @@ import type { WebSocket } from 'ws';
 
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 import { WebSocketWriter } from '@/modules/websocket/services/websocket-writer.service.js';
+import { buildForkHistoryPrompt, createForkWriter } from '@/modules/websocket/services/fork-session.service.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
@@ -118,8 +119,45 @@ export function handleChatConnection(
         throw new Error('Message type is required');
       }
 
+      // Fork pre-processing shared by every forkable provider command. When
+      // `options.fork` is set, the source session's history is serialized and
+      // prepended to the prompt, the command is spawned WITHOUT a sessionId (the
+      // target tool mints a fresh one), and a ForkWriter records lineage the
+      // moment that new id is announced. Returns the (command, options, writer)
+      // triple to spawn with — or null when this is an ordinary (non-fork) send.
+      const prepareForkSpawn = async (
+        opts: Record<string, unknown>,
+        command: string,
+        targetProvider: LLMProvider,
+      ): Promise<{ command: string; options: Record<string, unknown>; writer: WebSocketWriter } | null> => {
+        if (opts.fork !== true) {
+          return null;
+        }
+        const sourceSessionId = typeof opts.sourceSessionId === 'string' ? opts.sourceSessionId : '';
+        const sourceProvider = typeof opts.sourceProvider === 'string' ? opts.sourceProvider : 'claude';
+        const projectPath =
+          typeof opts.projectPath === 'string' && opts.projectPath
+            ? opts.projectPath
+            : typeof opts.cwd === 'string'
+              ? opts.cwd
+              : '';
+        const historyPrompt = sourceSessionId
+          ? await buildForkHistoryPrompt(sourceSessionId, sourceProvider)
+          : null;
+        const combinedCommand = historyPrompt ? historyPrompt + '\n\n' + command : command;
+        const forkWriter = createForkWriter(writer, sourceSessionId, sourceProvider, targetProvider, projectPath);
+        const forkOpts = { ...opts, sessionId: undefined, resume: false, fork: false };
+        return { command: combinedCommand, options: forkOpts, writer: forkWriter };
+      };
+
       if (messageType === 'claude-command') {
-        await dependencies.queryClaudeSDK(data.command ?? '', data.options, writer);
+        const opts = (data.options as Record<string, unknown>) ?? {};
+        const fork = await prepareForkSpawn(opts, data.command ?? '', 'claude');
+        if (fork) {
+          await dependencies.queryClaudeSDK(fork.command, fork.options, fork.writer);
+        } else {
+          await dependencies.queryClaudeSDK(data.command ?? '', data.options, writer);
+        }
         return;
       }
 
@@ -129,17 +167,35 @@ export function handleChatConnection(
       }
 
       if (messageType === 'codex-command') {
-        await dependencies.queryCodex(data.command ?? '', data.options, writer);
+        const opts = (data.options as Record<string, unknown>) ?? {};
+        const fork = await prepareForkSpawn(opts, data.command ?? '', 'codex');
+        if (fork) {
+          await dependencies.queryCodex(fork.command, fork.options, fork.writer);
+        } else {
+          await dependencies.queryCodex(data.command ?? '', data.options, writer);
+        }
         return;
       }
 
       if (messageType === 'gemini-command') {
-        await dependencies.spawnGemini(data.command ?? '', data.options, writer);
+        const opts = (data.options as Record<string, unknown>) ?? {};
+        const fork = await prepareForkSpawn(opts, data.command ?? '', 'gemini');
+        if (fork) {
+          await dependencies.spawnGemini(fork.command, fork.options, fork.writer);
+        } else {
+          await dependencies.spawnGemini(data.command ?? '', data.options, writer);
+        }
         return;
       }
 
       if (messageType === 'opencode-command') {
-        await dependencies.spawnOpenCode(data.command ?? '', data.options, writer);
+        const opts = (data.options as Record<string, unknown>) ?? {};
+        const fork = await prepareForkSpawn(opts, data.command ?? '', 'opencode');
+        if (fork) {
+          await dependencies.spawnOpenCode(fork.command, fork.options, fork.writer);
+        } else {
+          await dependencies.spawnOpenCode(data.command ?? '', data.options, writer);
+        }
         return;
       }
 

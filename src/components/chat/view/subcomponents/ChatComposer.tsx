@@ -13,11 +13,13 @@ import type {
 } from 'react';
 import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon } from 'lucide-react';
 import type { PendingPermissionRequest, PermissionMode, Provider } from '../../types/types';
+import type { LLMProvider, ProjectSession, ProviderModelsDefinition } from '../../../../types/app';
 import CommandMenu from './CommandMenu';
 import ClaudeStatus from './ClaudeStatus';
 import ImageAttachment from './ImageAttachment';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import ThinkingModeSelector from './ThinkingModeSelector';
+import ToolModelSelector from './ToolModelSelector';
 import TokenUsageSummary from './TokenUsageSummary';
 import {
   PromptInput,
@@ -101,6 +103,12 @@ interface ChatComposerProps {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  selectedSession?: ProjectSession | null;
+  providerModelCatalog?: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
+  providerModelsLoading?: boolean;
+  onToolModelSelect?: (provider: LLMProvider, model: string) => void;
+  baseProvider?: LLMProvider;
+  currentModel?: string;
 }
 
 export default function ChatComposer({
@@ -156,6 +164,12 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  selectedSession,
+  providerModelCatalog,
+  providerModelsLoading,
+  onToolModelSelect,
+  baseProvider,
+  currentModel,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const textareaRect = textareaRef.current?.getBoundingClientRect();
@@ -359,6 +373,18 @@ export default function ChatComposer({
 
             {provider === 'claude' && (
               <ThinkingModeSelector selectedMode={thinkingMode} onModeChange={setThinkingMode} onClose={() => {}} className="" />
+            )}
+
+            {selectedSession && onToolModelSelect && baseProvider && currentModel !== undefined && (
+              <ToolModelSelector
+                provider={provider as LLMProvider}
+                model={currentModel}
+                baseProvider={baseProvider}
+                providerModelCatalog={providerModelCatalog ?? {}}
+                providerModelsLoading={providerModelsLoading ?? false}
+                onSelect={onToolModelSelect}
+                disabled={isLoading}
+              />
             )}
 
             <TokenUsageSummary usage={tokenBudget} />

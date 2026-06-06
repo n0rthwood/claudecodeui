@@ -311,13 +311,24 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     }
   }, [selectedSession?.id, provider]);
 
+  // Sync the active provider to the session's owning provider, but ONLY when the
+  // selected session actually changes. Re-running on every `provider` change
+  // would fight the user's explicit tool switch in the composer (the fork UI):
+  // picking a different provider would be immediately reverted back. By keying
+  // off the session id we let the initial sync happen on session open, then
+  // leave subsequent in-session provider switches (= fork intent) untouched.
+  const lastSyncedSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedSession?.__provider || selectedSession.__provider === provider) {
+    const sid = selectedSession?.id ?? null;
+    if (sid === lastSyncedSessionIdRef.current) {
       return;
     }
+    lastSyncedSessionIdRef.current = sid;
 
-    setProvider(selectedSession.__provider);
-    localStorage.setItem('selected-provider', selectedSession.__provider);
+    if (selectedSession?.__provider && selectedSession.__provider !== provider) {
+      setProvider(selectedSession.__provider);
+      localStorage.setItem('selected-provider', selectedSession.__provider);
+    }
   }, [provider, selectedSession]);
 
   useEffect(() => {

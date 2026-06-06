@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, Trash2, X } from 'lucide-react';
+import { Check, Edit2, GitBranch, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Button, Tooltip } from '../../../../shared/view/ui';
@@ -115,6 +115,21 @@ export default function SidebarSessionItem({
     onDeleteSession(project.projectId, session.id, sessionView.sessionName, session.__provider);
   };
 
+  // Forked sessions carry a lineage pointer back to their source session.
+  const forkBadge = session.forkedFrom ? (
+    <span
+      className="inline-flex flex-shrink-0 items-center gap-0.5 rounded bg-orange-100 px-1 py-0 text-[10px] font-medium text-orange-600 dark:bg-orange-900/20 dark:text-orange-400"
+      title={
+        session.forkedFromProvider
+          ? `Forked from ${session.forkedFromProvider} session`
+          : 'Forked session'
+      }
+    >
+      <GitBranch className="h-2.5 w-2.5" />
+      fork
+    </span>
+  ) : null;
+
   return (
     <div className="group relative">
       {sessionView.isActive && (
@@ -153,6 +168,7 @@ export default function SidebarSessionItem({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <div className="truncate text-xs font-medium text-foreground">{sessionView.sessionName}</div>
+                {forkBadge}
                 {compactSessionAge && (
                   <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
                 )}
@@ -195,6 +211,7 @@ export default function SidebarSessionItem({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <div className="truncate text-xs font-medium text-foreground">{sessionView.sessionName}</div>
+                {forkBadge}
                 {compactSessionAge && (
                   <span
                     className={cn(

@@ -33,6 +33,9 @@ export interface ProjectSession {
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
+  forkedFrom?: string | null;
+  forkedFromProvider?: string | null;
+  forkedAt?: string | null;
   [key: string]: unknown;
 }
 

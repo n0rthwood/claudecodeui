@@ -12,6 +12,9 @@ type SessionSummary = {
   summary: string;
   messageCount: number;
   lastActivity: string;
+  forkedFrom: string | null;
+  forkedFromProvider: string | null;
+  forkedAt: string | null;
 };
 
 type SessionsByProvider = Record<'claude' | 'cursor' | 'codex' | 'gemini' | 'opencode', SessionSummary[]>;
@@ -22,6 +25,9 @@ type SessionRepositoryRow = {
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  forked_from?: string | null;
+  forked_from_provider?: string | null;
+  forked_at?: string | null;
 };
 
 export type ProjectListItem = {
@@ -132,6 +138,9 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     summary: row.custom_name || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    forkedFrom: row.forked_from ?? null,
+    forkedFromProvider: row.forked_from_provider ?? null,
+    forkedAt: row.forked_at ?? null,
   };
 }
 

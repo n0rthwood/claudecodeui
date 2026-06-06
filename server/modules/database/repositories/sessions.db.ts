@@ -11,11 +11,14 @@ type SessionRow = {
   isArchived: number;
   created_at: string;
   updated_at: string;
+  forked_from: string | null;
+  forked_from_provider: string | null;
+  forked_at: string | null;
 };
 
 type SessionMetadataLookupRow = Pick<
   SessionRow,
-  'session_id' | 'provider' | 'project_path' | 'jsonl_path' | 'custom_name' | 'isArchived' | 'created_at' | 'updated_at'
+  'session_id' | 'provider' | 'project_path' | 'jsonl_path' | 'custom_name' | 'isArchived' | 'created_at' | 'updated_at' | 'forked_from' | 'forked_from_provider' | 'forked_at'
 >;
 
 function normalizeTimestamp(value?: string): string | null {
@@ -89,7 +92,7 @@ export const sessionsDb = {
     const db = getConnection();
     const row = db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE session_id = ?
          ORDER BY updated_at DESC
@@ -104,7 +107,7 @@ export const sessionsDb = {
     const db = getConnection();
     return db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE isArchived = 0`
       )
@@ -119,7 +122,7 @@ export const sessionsDb = {
     const db = getConnection();
     return db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE isArchived = 1
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
@@ -132,7 +135,7 @@ export const sessionsDb = {
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     return db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0`
@@ -149,7 +152,7 @@ export const sessionsDb = {
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     return db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE project_path = ?`
       )
@@ -161,7 +164,7 @@ export const sessionsDb = {
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     return db
       .prepare(
-        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at
+        `SELECT session_id, provider, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, forked_from, forked_from_provider, forked_at
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
@@ -221,5 +224,14 @@ export const sessionsDb = {
   deleteSessionById(sessionId: string): boolean {
     const db = getConnection();
     return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;
+  },
+
+  markForked(sessionId: string, sourceSessionId: string, sourceProvider: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET forked_from = ?, forked_from_provider = ?, forked_at = CURRENT_TIMESTAMP
+       WHERE session_id = ?`
+    ).run(sourceSessionId, sourceProvider, sessionId);
   },
 };

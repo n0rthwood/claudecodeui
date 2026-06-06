@@ -313,6 +313,9 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         isArchived BOOLEAN DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        forked_from TEXT,
+        forked_from_provider TEXT,
+        forked_at DATETIME,
         PRIMARY KEY (session_id),
         FOREIGN KEY (project_path) REFERENCES projects(project_path)
         ON DELETE SET NULL
@@ -330,6 +333,9 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           ${isArchivedExpression} AS isArchived,
           ${createdAtExpression} AS created_at,
           ${updatedAtExpression} AS updated_at,
+          NULL AS forked_from,
+          NULL AS forked_from_provider,
+          NULL AS forked_at,
           rowid AS source_rowid
         FROM sessions
         WHERE session_id IS NOT NULL AND trim(session_id) <> ''
@@ -344,6 +350,9 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           isArchived,
           created_at,
           updated_at,
+          forked_from,
+          forked_from_provider,
+          forked_at,
           ROW_NUMBER() OVER (
             PARTITION BY session_id
             ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, source_rowid DESC
@@ -358,7 +367,10 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         jsonl_path,
         isArchived,
         created_at,
-        updated_at
+        updated_at,
+        forked_from,
+        forked_from_provider,
+        forked_at
       )
       SELECT
         session_id,
@@ -368,7 +380,10 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         jsonl_path,
         isArchived,
         created_at,
-        updated_at
+        updated_at,
+        forked_from,
+        forked_from_provider,
+        forked_at
       FROM ranked_rows
       WHERE session_rank = 1
     `);
@@ -430,6 +445,14 @@ export const runMigrations = (db: Database) => {
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
     ensureProjectsForSessionPaths(db);
+
+    // Lineage columns for forked sessions
+    const sessionsInfo = getTableInfo(db, 'sessions');
+    const sessionsColumnNames = sessionsInfo.map((c) => c.name);
+    addColumnToTableIfNotExists(db, 'sessions', sessionsColumnNames, 'forked_from', 'TEXT');
+    addColumnToTableIfNotExists(db, 'sessions', sessionsColumnNames, 'forked_from_provider', 'TEXT');
+    addColumnToTableIfNotExists(db, 'sessions', sessionsColumnNames, 'forked_at', 'DATETIME');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_forked_from ON sessions(forked_from)');
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path)');
