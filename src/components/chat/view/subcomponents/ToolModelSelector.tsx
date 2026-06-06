@@ -30,6 +30,9 @@ type ToolModelSelectorProps = {
   baseProvider: LLMProvider; // the session's original provider (for fork detection display)
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  // Installed+authenticated providers; when set, only these tools are listed.
+  // null/undefined = not yet resolved → show all (safe default).
+  availableProviders?: LLMProvider[] | null;
   onSelect: (provider: LLMProvider, model: string) => void;
   disabled?: boolean;
 };
@@ -40,6 +43,7 @@ export default function ToolModelSelector({
   baseProvider,
   providerModelCatalog,
   providerModelsLoading,
+  availableProviders,
   onSelect,
   disabled = false,
 }: ToolModelSelectorProps) {
@@ -52,15 +56,19 @@ export default function ToolModelSelector({
     return opts.find((o) => o.value === model)?.label || model;
   }, [provider, model, providerModelCatalog]);
 
-  const providerGroups = useMemo(
-    () =>
-      PROVIDER_META.map((p) => ({
-        id: p.id,
-        name: p.name,
-        models: providerModelCatalog[p.id]?.OPTIONS ?? [],
-      })),
-    [providerModelCatalog],
-  );
+  const providerGroups = useMemo(() => {
+    // Show only installed+authenticated tools when known; until resolved (null),
+    // fall back to all so the picker is never empty. Always keep the current
+    // provider visible even if the availability list lags behind.
+    const allowed = availableProviders
+      ? new Set<LLMProvider>([...availableProviders, provider])
+      : null;
+    return PROVIDER_META.filter((p) => !allowed || allowed.has(p.id)).map((p) => ({
+      id: p.id,
+      name: p.name,
+      models: providerModelCatalog[p.id]?.OPTIONS ?? [],
+    }));
+  }, [providerModelCatalog, availableProviders, provider]);
 
   const handleSelect = useCallback(
     (newProvider: LLMProvider, newModel: string) => {

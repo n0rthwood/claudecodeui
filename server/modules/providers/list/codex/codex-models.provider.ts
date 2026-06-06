@@ -1,7 +1,9 @@
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import crossSpawn from 'cross-spawn';
 import TOML from '@iarna/toml';
 
 import type { IProviderModels } from '@/shared/interfaces.js';
@@ -41,6 +43,70 @@ type CodexCachedModel = {
 
 const CODEX_MODELS_CACHE_PATH = path.join(os.homedir(), '.codex', 'models_cache.json');
 const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
+const CODEX_DEBUG_MODELS_TIMEOUT_MS = 10_000;
+const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
+
+// `codex debug models` renders the raw model catalog as JSON. Unlike
+// models_cache.json (an HTTP-fetched partial cache that can lag the binary),
+// this is the complete catalog embedded in the codex binary, works fully
+// offline, and needs no API key. It is the most reliable enumeration source.
+const runCodexDebugModels = (): Promise<CodexCachedModel[]> => new Promise((resolve, reject) => {
+  const codexProcess = spawnFunction('codex', ['debug', 'models'], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+  });
+
+  let stdout = '';
+  let stderr = '';
+  let settled = false;
+
+  const timer = setTimeout(() => {
+    codexProcess.kill('SIGTERM');
+    if (!settled) {
+      settled = true;
+      reject(new Error('codex debug models timed out'));
+    }
+  }, CODEX_DEBUG_MODELS_TIMEOUT_MS);
+
+  const finish = (error: Error | null, output: string) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timer);
+    if (error) {
+      reject(error);
+      return;
+    }
+
+    try {
+      const parsed = readObjectRecord(JSON.parse(output));
+      const models = Array.isArray(parsed?.models)
+        ? parsed.models.filter(isCodexCachedModel)
+        : [];
+      resolve(models);
+    } catch (parseError) {
+      reject(parseError instanceof Error ? parseError : new Error(String(parseError)));
+    }
+  };
+
+  codexProcess.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  codexProcess.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  codexProcess.on('error', (error) => {
+    finish(error instanceof Error ? error : new Error(String(error)), '');
+  });
+  codexProcess.on('close', (code) => {
+    if (code !== 0) {
+      finish(new Error(stderr.trim() || `codex debug models exited with code ${code}`), '');
+      return;
+    }
+    finish(null, stdout);
+  });
+});
 
 const isCodexCachedModel = (value: unknown): value is CodexCachedModel => {
   const record = readObjectRecord(value);
@@ -58,8 +124,11 @@ const mapCodexModel = (model: CodexCachedModel): ProviderModelOption => ({
 });
 
 const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsDefinition => {
+  // Codex marks non-selectable entries (e.g. codex-auto-review) with
+  // visibility "hide" (the catalog also uses "hidden" in some versions); only
+  // "list" models belong in a picker.
   const sortedModels = [...models]
-    .filter((model) => model.visibility !== 'hidden' && model.supported_in_api !== false)
+    .filter((model) => model.visibility !== 'hidden' && model.visibility !== 'hide' && model.supported_in_api !== false)
     .sort((left, right) => readCodexPriority(left.priority) - readCodexPriority(right.priority));
 
   const options: ProviderModelOption[] = [];
@@ -79,14 +148,30 @@ const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsD
     return CODEX_FALLBACK_MODELS;
   }
 
+  // Prefer the stable known-good default when the catalog still offers it, so
+  // switching the catalog source (cache → debug models) doesn't silently change
+  // which model is selected by default; otherwise fall back to highest priority.
+  const hasKnownDefault = options.some((option) => option.value === CODEX_FALLBACK_MODELS.DEFAULT);
+
   return {
     OPTIONS: options,
-    DEFAULT: options[0]?.value ?? CODEX_FALLBACK_MODELS.DEFAULT,
+    DEFAULT: hasKnownDefault ? CODEX_FALLBACK_MODELS.DEFAULT : (options[0]?.value ?? CODEX_FALLBACK_MODELS.DEFAULT),
   };
 };
 
 export class CodexProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    // Primary: the complete catalog from `codex debug models` (offline, no key).
+    try {
+      const models = await runCodexDebugModels();
+      if (models.length > 0) {
+        return buildCodexModelsDefinition(models);
+      }
+    } catch {
+      // Fall through to the on-disk cache when the CLI is unavailable.
+    }
+
+    // Fallback: the HTTP-fetched cache file (may be a partial/stale subset).
     try {
       const raw = await readFile(CODEX_MODELS_CACHE_PATH, 'utf8');
       const parsed = readObjectRecord(JSON.parse(raw));

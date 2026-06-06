@@ -52,6 +52,7 @@ type ProviderSelectionEmptyStateProps = {
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  availableProviders?: LLMProvider[] | null;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -113,6 +114,7 @@ export default function ProviderSelectionEmptyState({
   setOpenCodeModel,
   providerModelCatalog,
   providerModelsLoading,
+  availableProviders,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -122,12 +124,17 @@ export default function ProviderSelectionEmptyState({
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
+    // Only list installed+authenticated tools when known; keep the active
+    // provider visible regardless, and fall back to all until resolved (null).
+    const allowed = availableProviders
+      ? new Set<LLMProvider>([...availableProviders, provider])
+      : null;
+    return PROVIDER_META.filter((p) => !allowed || allowed.has(p.id)).map((p) => ({
       id: p.id,
       name: p.name,
       models: providerModelCatalog[p.id]?.OPTIONS ?? [],
     }));
-  }, [providerModelCatalog]);
+  }, [providerModelCatalog, availableProviders, provider]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",

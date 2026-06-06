@@ -124,6 +124,10 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
   >({});
   const [providerModelsLoading, setProviderModelsLoading] = useState(true);
   const [providerModelsRefreshing, setProviderModelsRefreshing] = useState(false);
+  // Providers that are actually installed AND authenticated on the server. The
+  // tool/model selector lists only these instead of hardcoding every provider.
+  // null = not yet loaded (callers fall back to "show all" until it resolves).
+  const [availableProviders, setAvailableProviders] = useState<LLMProvider[] | null>(null);
 
   const lastProviderRef = useRef(provider);
   const providerModelsRequestIdRef = useRef(0);
@@ -220,6 +224,30 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
   useEffect(() => {
     void loadProviderModels();
   }, [loadProviderModels]);
+
+  // Load the set of installed+authenticated providers once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await authenticatedFetch('/api/providers/available');
+        const body = (await response.json()) as {
+          success?: boolean;
+          data?: { providers?: LLMProvider[] };
+        };
+        if (!cancelled && body.success && Array.isArray(body.data?.providers)) {
+          setAvailableProviders(body.data.providers);
+        }
+      } catch (error) {
+        // Leave as null (= show all) so a status-endpoint hiccup never hides
+        // every tool from the user.
+        console.error('Error loading available providers:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const pickStoredOrCurrent = (
     storageKey: string,
@@ -437,6 +465,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    availableProviders,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     selectProviderModel,
   };

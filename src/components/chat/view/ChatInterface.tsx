@@ -82,6 +82,7 @@ function ChatInterface({
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    availableProviders,
     hardRefreshProviderModels,
     selectProviderModel,
   } = useChatProviderState({
@@ -377,6 +378,7 @@ function ChatInterface({
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          availableProviders={availableProviders}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
@@ -474,6 +476,7 @@ function ChatInterface({
           selectedSession={selectedSession}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          availableProviders={availableProviders}
           onToolModelSelect={handleToolModelSelect}
           baseProvider={baseProviderRef.current}
           currentModel={currentModel}

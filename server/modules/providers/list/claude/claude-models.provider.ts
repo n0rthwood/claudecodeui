@@ -13,30 +13,42 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
+// Claude Code has no reliable CLI/API to enumerate models without an API key
+// (GET /v1/models needs x-api-key; many users authenticate via OAuth), and the
+// concrete version behind each alias changes over time. We therefore list the
+// stable aliases the `claude --model` flag accepts and DISPLAY them WITHOUT a
+// version number, so the picker can never show a stale/wrong version. The alias
+// is passed through to the CLI, which always resolves it to the latest model
+// (e.g. `opus` → Opus 4.8 today, the next Opus tomorrow).
 export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
-      value: 'default',
-      label: 'Default (recommended)',
-      description: 'Use the default model (currently Opus 4.7 (1M context)) · $5/$25 per Mtok',
+      value: 'opus',
+      label: 'Opus',
+      description: 'Latest Opus · most capable, for complex reasoning',
     },
     {
       value: 'sonnet',
       label: 'Sonnet',
-      description: 'Sonnet 4.6 · Best for everyday tasks · $3/$15 per Mtok',
-    },
-    {
-      value: 'sonnet[1m]',
-      label: 'Sonnet (1M context)',
-      description: 'Sonnet 4.6 for long sessions · $3/$15 per Mtok',
+      description: 'Latest Sonnet · best for everyday coding',
     },
     {
       value: 'haiku',
       label: 'Haiku',
-      description: 'Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok',
+      description: 'Latest Haiku · fastest for quick answers',
+    },
+    {
+      value: 'sonnet[1m]',
+      label: 'Sonnet (1M context)',
+      description: 'Latest Sonnet with a 1M-token context window',
+    },
+    {
+      value: 'opusplan',
+      label: 'Opus Plan',
+      description: 'Opus while planning, Sonnet while executing',
     },
   ],
-  DEFAULT: 'default',
+  DEFAULT: 'opus',
 };
 type ClaudeInitEvent = {
   sessionId?: string;

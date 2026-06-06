@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from 'express';
 
 import { providerModelsDb } from '@/modules/database/index.js';
+import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
@@ -283,6 +284,33 @@ router.get(
     const provider = parseProvider(req.params.provider);
     const status = await providerAuthService.getProviderAuthStatus(provider);
     res.json(createApiSuccessResponse(status));
+  }),
+);
+
+/**
+ * Lists the providers that are usable on this machine — i.e. both installed AND
+ * authenticated — so the UI tool/model selector can show only configured tools
+ * instead of hardcoding every provider (which surfaces e.g. Cursor/Gemini even
+ * when no key/login exists). Status lookups run in parallel and never throw the
+ * whole request: a provider whose status check fails is simply omitted.
+ */
+router.get(
+  '/available',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const providers = providerRegistry.listProviders().map((p) => p.id);
+    const statuses = await Promise.all(
+      providers.map(async (provider) => {
+        try {
+          const status = await providerAuthService.getProviderAuthStatus(provider);
+          return { provider, available: Boolean(status.installed && status.authenticated) };
+        } catch {
+          return { provider, available: false };
+        }
+      }),
+    );
+
+    const available = statuses.filter((entry) => entry.available).map((entry) => entry.provider);
+    res.json(createApiSuccessResponse({ providers: available }));
   }),
 );
 

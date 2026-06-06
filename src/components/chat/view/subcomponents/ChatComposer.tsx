@@ -106,6 +106,7 @@ interface ChatComposerProps {
   selectedSession?: ProjectSession | null;
   providerModelCatalog?: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading?: boolean;
+  availableProviders?: LLMProvider[] | null;
   onToolModelSelect?: (provider: LLMProvider, model: string) => void;
   baseProvider?: LLMProvider;
   currentModel?: string;
@@ -167,6 +168,7 @@ export default function ChatComposer({
   selectedSession,
   providerModelCatalog,
   providerModelsLoading,
+  availableProviders,
   onToolModelSelect,
   baseProvider,
   currentModel,
@@ -382,6 +384,7 @@ export default function ChatComposer({
                 baseProvider={baseProvider}
                 providerModelCatalog={providerModelCatalog ?? {}}
                 providerModelsLoading={providerModelsLoading ?? false}
+                availableProviders={availableProviders}
                 onSelect={onToolModelSelect}
                 disabled={isLoading}
               />
